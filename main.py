@@ -12,6 +12,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", None)
+OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", None)
+OPENCODE_AGENT = os.getenv("OPENCODE_AGENT", None)
 
 # Initialize TTS
 engine = pyttsx3.init()
@@ -65,8 +67,15 @@ def query_llm(messages):
             import subprocess
             # We just pass the latest message to opencode
             latest_message = messages[-1]["content"]
+            
+            cmd = ["opencode", "run", latest_message]
+            if OPENCODE_MODEL:
+                cmd.extend(["--model", OPENCODE_MODEL])
+            if OPENCODE_AGENT:
+                cmd.extend(["--agent", OPENCODE_AGENT])
+                
             result = subprocess.run(
-                ["opencode", "run", latest_message], 
+                cmd, 
                 capture_output=True, 
                 text=True, 
                 check=True
