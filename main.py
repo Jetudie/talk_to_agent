@@ -43,6 +43,8 @@ elif LLM_BACKEND == "openai":
     except ImportError:
         print("Error: 'openai' package not installed. Please run: pip install openai")
         exit(1)
+elif LLM_BACKEND == "opencode":
+    print("Initialized Opencode backend. Ensure the 'opencode' CLI is installed and configured.")
 else:
     print(f"Unknown LLM_BACKEND: {LLM_BACKEND}")
     exit(1)
@@ -59,6 +61,21 @@ def query_llm(messages):
                 messages=messages
             )
             return response.choices[0].message.content
+        elif LLM_BACKEND == "opencode":
+            import subprocess
+            # We just pass the latest message to opencode
+            latest_message = messages[-1]["content"]
+            result = subprocess.run(
+                ["opencode", "run", latest_message], 
+                capture_output=True, 
+                text=True, 
+                check=True
+            )
+            # You might want to clean up ANSI escape codes if opencode returns styled text,
+            # but for now we just return the raw stdout.
+            return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        return f"Opencode failed: {e.stderr}"
     except Exception as e:
         return f"I encountered an error connecting to my brain. Details: {e}"
 
