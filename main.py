@@ -14,6 +14,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", None)
 OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", None)
 OPENCODE_AGENT = os.getenv("OPENCODE_AGENT", None)
+OPENCODE_SERVER_URL = os.getenv("OPENCODE_SERVER_URL", "http://127.0.0.1:4096")
 
 # Initialize TTS
 engine = pyttsx3.init()
@@ -69,6 +70,8 @@ def query_llm(messages):
             latest_message = messages[-1]["content"]
             
             cmd = ["opencode", "run", latest_message]
+            if OPENCODE_SERVER_URL:
+                cmd.extend(["--attach", OPENCODE_SERVER_URL])
             if OPENCODE_MODEL:
                 cmd.extend(["--model", OPENCODE_MODEL])
             if OPENCODE_AGENT:
