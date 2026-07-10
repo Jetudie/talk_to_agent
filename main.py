@@ -1,6 +1,11 @@
 import os
-import speech_recognition as sr
+import struct
+import wave
+import tempfile
+import numpy as np
+import pyaudio
 import pyttsx3
+from faster_whisper import WhisperModel
 from dotenv import load_dotenv
 
 # Load environment variables from .env file if present
@@ -16,6 +21,20 @@ OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", None)
 OPENCODE_AGENT = os.getenv("OPENCODE_AGENT", None)
 OPENCODE_SERVER_URL = os.getenv("OPENCODE_SERVER_URL", "http://127.0.0.1:4096")
 
+# Whisper STT configuration
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")  # "cpu", "cuda", or "auto"
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", None)  # e.g. "en", "zh", None for auto-detect
+
+# Audio recording parameters
+SAMPLE_RATE = 16000
+CHANNELS = 1
+CHUNK_SIZE = 1024  # frames per buffer
+FORMAT = pyaudio.paInt16
+SILENCE_THRESHOLD = int(os.getenv("SILENCE_THRESHOLD", "500"))  # RMS energy threshold
+SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "1.5"))  # seconds of silence to stop recording
+MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "30"))  # max recording length
+
 # Initialize TTS
 engine = pyttsx3.init()
 # Optional: tweak speech rate or voice
@@ -26,6 +45,11 @@ def speak(text):
     print(f"Agent: {text}")
     engine.say(text)
     engine.runAndWait()
+
+# Initialize Whisper model
+print(f"Loading Faster-Whisper model '{WHISPER_MODEL_SIZE}' on device '{WHISPER_DEVICE}'...")
+whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE)
+print("Whisper model loaded.")
 
 # Initialize LLM Client
 if LLM_BACKEND == "ollama":
@@ -51,6 +75,69 @@ elif LLM_BACKEND == "opencode":
 else:
     print(f"Unknown LLM_BACKEND: {LLM_BACKEND}")
     exit(1)
+
+def get_rms(data):
+    """Calculate the root mean square (RMS) energy of an audio chunk."""
+    count = len(data) // 2  # 16-bit = 2 bytes per sample
+    shorts = struct.unpack(f"<{count}h", data)
+    sum_squares = sum(s * s for s in shorts)
+    return (sum_squares / count) ** 0.5 if count > 0 else 0
+
+def record_speech(pa):
+    """Record audio from the microphone until silence is detected. Returns raw PCM bytes or None."""
+    stream = pa.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=SAMPLE_RATE,
+        input=True,
+        frames_per_buffer=CHUNK_SIZE
+    )
+
+    frames = []
+    silent_chunks = 0
+    has_speech = False
+    chunks_per_second = SAMPLE_RATE / CHUNK_SIZE
+    max_chunks = int(MAX_RECORD_SECONDS * chunks_per_second)
+    silence_chunks_needed = int(SILENCE_DURATION * chunks_per_second)
+
+    try:
+        for _ in range(max_chunks):
+            data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            rms = get_rms(data)
+
+            if rms >= SILENCE_THRESHOLD:
+                has_speech = True
+                silent_chunks = 0
+                frames.append(data)
+            elif has_speech:
+                # Speech was detected before, now counting silence
+                silent_chunks += 1
+                frames.append(data)
+                if silent_chunks >= silence_chunks_needed:
+                    break
+            # else: still waiting for speech to start, discard ambient noise
+    finally:
+        stream.stop_stream()
+        stream.close()
+
+    if not has_speech:
+        return None
+
+    return b"".join(frames)
+
+def transcribe(audio_bytes):
+    """Transcribe raw PCM audio bytes using Faster-Whisper. Returns the transcribed text."""
+    # Convert raw PCM bytes to a float32 numpy array (what faster-whisper expects)
+    audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+    audio_float32 = audio_int16.astype(np.float32) / 32768.0
+
+    kwargs = {}
+    if WHISPER_LANGUAGE:
+        kwargs["language"] = WHISPER_LANGUAGE
+
+    segments, info = whisper_model.transcribe(audio_float32, beam_size=5, **kwargs)
+    text = " ".join(segment.text for segment in segments).strip()
+    return text
 
 def query_llm(messages):
     """Sends the conversation history to the chosen LLM backend and returns the response string."""
@@ -92,33 +179,36 @@ def query_llm(messages):
         return f"I encountered an error connecting to my brain. Details: {e}"
 
 def main():
-    recognizer = sr.Recognizer()
+    pa = pyaudio.PyAudio()
     
     # Context window to keep track of conversation
     messages = [
         {"role": "system", "content": "You are a helpful and concise voice assistant. Since you are speaking, keep your answers relatively short and conversational. Do not use markdown like asterisks or code blocks if possible, as it will be read aloud."}
     ]
     
-    speak("I am starting up. Please wait a moment while I adjust to the background noise.")
+    speak("I'm ready. You can start talking.")
     
-    with sr.Microphone() as source:
-        recognizer.adjust_for_ambient_noise(source, duration=2)
-        speak("I'm ready. You can start talking.")
-        
+    try:
         while True:
             try:
                 print("\nListening...")
-                # listen() blocks until speech is detected and finished
-                audio = recognizer.listen(source, timeout=None, phrase_time_limit=15)
+                audio_bytes = record_speech(pa)
+                
+                if audio_bytes is None:
+                    continue  # No speech detected, keep listening
                 
                 print("Transcribing...")
-                # We use Google's free Web Speech API for ease. 
-                # Can be replaced with recognizer.recognize_whisper() for offline.
-                text = recognizer.recognize_google(audio)
+                text = transcribe(audio_bytes)
+                
+                if not text:
+                    print("(empty transcription)")
+                    continue
+                    
                 print(f"You: {text}")
                 
                 # Check for an exit command
-                if text.lower() in ["exit", "quit", "stop listening", "goodbye"]:
+                if text.lower().strip() in ["exit", "quit", "stop listening", "goodbye",
+                                             "exit.", "quit.", "goodbye."]:
                     speak("Goodbye!")
                     break
                 
@@ -134,19 +224,14 @@ def main():
                 # Speak response
                 speak(response_text)
                 
-            except sr.WaitTimeoutError:
-                pass # Nobody spoke within timeout
-            except sr.UnknownValueError:
-                print("Could not understand audio.")
-            except sr.RequestError as e:
-                print(f"Could not request results from STT service; {e}")
-                speak("I'm having trouble with my speech recognition service.")
             except KeyboardInterrupt:
                 print("\nStopping...")
                 speak("Goodbye!")
                 break
             except Exception as e:
                 print(f"An unexpected error occurred: {e}")
+    finally:
+        pa.terminate()
 
 if __name__ == "__main__":
     main()
