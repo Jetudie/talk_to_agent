@@ -11,6 +11,7 @@ A Python-based AI agent that you can talk to directly. It listens to your voice,
   - **OpenAI Compatible**: Connect to OpenAI or any compatible API (e.g., LM Studio, vLLM).
   - **Opencode**: Forward your voice commands directly to a running `opencode serve` instance to give the agent full file and environment access.
 - **Local Text-to-Speech (TTS)**: Uses `pyttsx3` to synthesize speech offline.
+- **Persistent Memory**: File-based memory system that survives across sessions, with systematic session handover.
 
 ## Prerequisites
 
@@ -45,6 +46,7 @@ Set `LLM_BACKEND` to one of the following:
 - `opencode`: Requires an `opencode` server to be running.
   - Start the server using: `opencode serve --port 4096`
   - Ensure `OPENCODE_SERVER_URL` in your `.env` points to `http://127.0.0.1:4096`.
+  - Optionally set `OPENCODE_MODEL` and `OPENCODE_AGENT` to use a specific model/agent with pre-configured system prompts.
 
 ### Whisper STT
 - **`WHISPER_MODEL_SIZE`**: `tiny`, `base`, `small`, `medium`, or `large-v3`. (Default: `base`).
@@ -54,6 +56,9 @@ Set `LLM_BACKEND` to one of the following:
 ### Audio Recording
 - **`SILENCE_THRESHOLD`**: RMS energy threshold (Default: `500`). Decrease if it's struggling to pick up quiet speech; increase if background noise is triggering it.
 - **`SILENCE_DURATION`**: Seconds of silence required to consider you "finished" speaking (Default: `1.5`).
+
+### Memory
+- **`MEMORY_DIR`**: Directory for persistent memory files (Default: `memory`).
 
 ## Usage
 
@@ -66,3 +71,58 @@ python main.py
 2. Speak your prompt or question clearly.
 3. The agent will transcribe your audio, process the response through the configured backend, and speak it aloud.
 4. To stop the agent, say **"exit"**, **"quit"**, or **"goodbye"**. You can also press `Ctrl+C` in the terminal.
+
+## Memory System
+
+When using the `opencode` backend, the agent has a persistent memory system that stores information in files so it can remember things across sessions.
+
+### Directory Structure
+
+```
+memory/
+├── context/                ← Always injected into every request
+│   ├── summary.md          ← Rolling summary of key facts, user preferences, recurring topics
+│   ├── notes.md            ← Quick notes ("remember that...", "make a note...")
+│   └── last_session.md     ← Detailed handover from the most recent session
+└── tasks/                  ← Task-oriented files
+    ├── todo.md             ← Active to-do list (always injected)
+    └── done.md             ← Completed tasks log (injected on-demand)
+```
+
+### How It Works
+
+**Context files** (`context/`) are always included in every request so the agent has continuity:
+- `summary.md` — Long-term facts and preferences learned about you.
+- `notes.md` — Things you explicitly asked the agent to remember.
+- `last_session.md` — A detailed handover from the previous session so the agent knows exactly where you left off.
+
+**Task files** (`tasks/`) track your to-do items:
+- `todo.md` — Active tasks. Always included so the agent knows what's pending.
+- `done.md` — Completed tasks with timestamps. Only included when you ask about completed/finished tasks (to save tokens).
+
+### Session Handover
+
+When you end a session (by saying "goodbye" or pressing Ctrl+C), the agent automatically:
+1. Writes a detailed handover to `last_session.md` covering what was discussed, decisions made, and open threads.
+2. Updates `summary.md` with any new long-term information learned.
+3. Ensures `todo.md` accurately reflects the current task state.
+
+When you start a new session, all this context is injected into the first message, giving the agent seamless continuity.
+
+### Resetting Memory
+
+To start fresh, simply delete the `memory/` directory:
+```bash
+rm -rf memory/
+```
+It will be re-created with empty seed files on the next run.
+
+## Project Files
+
+| File | Description |
+|---|---|
+| `main.py` | Core voice agent script |
+| `.env.example` | Template for environment configuration |
+| `AGENTS.md` | Instructions for the opencode agent (memory rules, response style) |
+| `requirements.txt` | Python dependencies |
+| `memory/` | Persistent memory directory (auto-created) |

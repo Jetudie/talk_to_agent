@@ -21,6 +21,9 @@ OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", None)
 OPENCODE_AGENT = os.getenv("OPENCODE_AGENT", None)
 OPENCODE_SERVER_URL = os.getenv("OPENCODE_SERVER_URL", "http://127.0.0.1:4096")
 
+# Memory configuration
+MEMORY_DIR = os.getenv("MEMORY_DIR", "memory")
+
 # Whisper STT configuration
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")  # "cpu", "cuda", or "auto"
@@ -139,6 +142,113 @@ def transcribe(audio_bytes):
     text = " ".join(segment.text for segment in segments).strip()
     return text
 
+# --- Memory System Helpers ---
+
+def read_memory_file(filepath):
+    """Read a memory file and return its contents, or empty string if it doesn't exist."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        print(f"Warning: Could not read {filepath}: {e}")
+        return ""
+
+def ensure_memory_dir():
+    """Create the memory directory structure and seed files if they don't exist."""
+    dirs = [
+        os.path.join(MEMORY_DIR, "context"),
+        os.path.join(MEMORY_DIR, "tasks"),
+    ]
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
+
+    seed_files = {
+        os.path.join(MEMORY_DIR, "context", "summary.md"): "# Rolling Summary\n\n*This file is maintained by the voice agent. It contains a concise summary of key facts, user preferences, and recurring topics learned across sessions.*\n",
+        os.path.join(MEMORY_DIR, "context", "notes.md"): "# Notes\n\n*This file is maintained by the voice agent. It stores quick notes and facts the user asked the agent to remember.*\n",
+        os.path.join(MEMORY_DIR, "context", "last_session.md"): "# Last Session\n\nNo previous session recorded.\n",
+        os.path.join(MEMORY_DIR, "tasks", "todo.md"): "# To-Do List\n\n*This file is maintained by the voice agent. It contains active tasks.*\n",
+        os.path.join(MEMORY_DIR, "tasks", "done.md"): "# Completed Tasks\n\n*This file is maintained by the voice agent. It logs completed tasks with timestamps.*\n",
+    }
+    for filepath, content in seed_files.items():
+        if not os.path.exists(filepath):
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+
+def build_memory_context(user_message):
+    """Build a memory context block to prepend to the user's message for opencode."""
+    # Always-injected files
+    last_session = read_memory_file(os.path.join(MEMORY_DIR, "context", "last_session.md"))
+    summary = read_memory_file(os.path.join(MEMORY_DIR, "context", "summary.md"))
+    notes = read_memory_file(os.path.join(MEMORY_DIR, "context", "notes.md"))
+    todo = read_memory_file(os.path.join(MEMORY_DIR, "tasks", "todo.md"))
+
+    # On-demand: include done.md only when relevant keywords appear
+    done_keywords = ["done", "completed", "finished", "history", "past tasks", "what did i finish", "accomplishments"]
+    include_done = any(kw in user_message.lower() for kw in done_keywords)
+
+    context_parts = [
+        "[MEMORY CONTEXT — Read this carefully before responding]",
+        "",
+        "## Last Session Handover",
+        last_session,
+        "",
+        "## Rolling Summary",
+        summary,
+        "",
+        "## Notes",
+        notes,
+        "",
+        "## Active To-Do",
+        todo,
+    ]
+
+    if include_done:
+        done = read_memory_file(os.path.join(MEMORY_DIR, "tasks", "done.md"))
+        context_parts.extend(["", "## Completed Tasks", done])
+
+    context_parts.extend(["", "[END MEMORY CONTEXT]"])
+
+    return "\n".join(context_parts)
+
+def build_handover_message():
+    """Build the shutdown handover message to send to opencode."""
+    return (
+        "[SESSION ENDING — HANDOVER REQUIRED]\n"
+        "The voice session is ending. Please perform the following handover steps:\n"
+        "1. Write a detailed handover to memory/context/last_session.md covering:\n"
+        "   - Date/time of this session\n"
+        "   - Topics discussed and key decisions made\n"
+        "   - Any tasks that were added, completed, or are still in progress\n"
+        "   - Any open questions or unfinished threads the user may want to continue\n"
+        "   - User's apparent priorities if notable\n"
+        "2. Update memory/context/summary.md if any new long-term facts or preferences were learned.\n"
+        "3. Ensure memory/tasks/todo.md accurately reflects the current state of all tasks.\n"
+        "Respond with a brief confirmation of what you saved."
+    )
+
+def run_opencode(message):
+    """Run a message through opencode CLI and return the response."""
+    import subprocess
+    cmd = ["opencode", "run", message]
+    if OPENCODE_SERVER_URL:
+        cmd.extend(["--attach", OPENCODE_SERVER_URL])
+    if OPENCODE_MODEL:
+        cmd.extend(["--model", OPENCODE_MODEL])
+    if OPENCODE_AGENT:
+        cmd.extend(["--agent", OPENCODE_AGENT])
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    return result.stdout.strip()
+
+# --- LLM Query ---
+
 def query_llm(messages):
     """Sends the conversation history to the chosen LLM backend and returns the response string."""
     try:
@@ -152,33 +262,32 @@ def query_llm(messages):
             )
             return response.choices[0].message.content
         elif LLM_BACKEND == "opencode":
-            import subprocess
-            # We just pass the latest message to opencode
             latest_message = messages[-1]["content"]
-            
-            cmd = ["opencode", "run", latest_message]
-            if OPENCODE_SERVER_URL:
-                cmd.extend(["--attach", OPENCODE_SERVER_URL])
-            if OPENCODE_MODEL:
-                cmd.extend(["--model", OPENCODE_MODEL])
-            if OPENCODE_AGENT:
-                cmd.extend(["--agent", OPENCODE_AGENT])
-                
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                check=True
-            )
-            # You might want to clean up ANSI escape codes if opencode returns styled text,
-            # but for now we just return the raw stdout.
-            return result.stdout.strip()
+            # Build memory context and prepend it to the user's message
+            memory_context = build_memory_context(latest_message)
+            full_message = f"{memory_context}\n\nUser says: {latest_message}"
+            return run_opencode(full_message)
     except subprocess.CalledProcessError as e:
         return f"Opencode failed: {e.stderr}"
     except Exception as e:
         return f"I encountered an error connecting to my brain. Details: {e}"
 
+def perform_handover():
+    """Send the handover message to opencode so it can save session state."""
+    if LLM_BACKEND != "opencode":
+        return
+    try:
+        print("Performing session handover...")
+        handover_msg = build_handover_message()
+        response = run_opencode(handover_msg)
+        print(f"Handover complete: {response}")
+    except Exception as e:
+        print(f"Warning: Handover failed: {e}")
+
 def main():
+    # Ensure memory directory exists with seed files
+    ensure_memory_dir()
+
     pa = pyaudio.PyAudio()
     
     # Context window to keep track of conversation
@@ -209,7 +318,8 @@ def main():
                 # Check for an exit command
                 if text.lower().strip() in ["exit", "quit", "stop listening", "goodbye",
                                              "exit.", "quit.", "goodbye."]:
-                    speak("Goodbye!")
+                    speak("Saving session and shutting down. Goodbye!")
+                    perform_handover()
                     break
                 
                 # Add user input to history
@@ -226,7 +336,8 @@ def main():
                 
             except KeyboardInterrupt:
                 print("\nStopping...")
-                speak("Goodbye!")
+                speak("Saving session and shutting down. Goodbye!")
+                perform_handover()
                 break
             except Exception as e:
                 print(f"An unexpected error occurred: {e}")
