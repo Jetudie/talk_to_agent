@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import struct
 import subprocess
 import wave
@@ -330,8 +331,8 @@ def main() -> None:
                 logger.debug("Transcribing...")
                 text = transcribe(audio_bytes)
                 
-                if not text:
-                    logger.debug("Empty transcription, skipping.")
+                if not text or not re.search(r"[a-zA-Z0-9]", text):
+                    logger.debug("Empty or noise-only transcription, skipping.")
                     continue
                     
                 print(f"You: {text}")
