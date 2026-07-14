@@ -51,11 +51,10 @@ SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "1.5"))  # seconds of sil
 MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "30"))  # max recording length
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))  # max user+assistant messages to keep
 
-# Initialize TTS
-engine = pyttsx3.init()
-# Optional: tweak speech rate or voice
-# rate = engine.getProperty('rate')
-# engine.setProperty('rate', rate - 20)
+# Module-level references (initialized in init())
+engine = None
+whisper_model = None
+openai_client = None
 
 def speak(text: str) -> None:
     print(f"Agent: {text}")
@@ -65,35 +64,46 @@ def speak(text: str) -> None:
     except Exception as e:
         logger.warning("TTS failed to speak text: %s", e)
 
-# Initialize Whisper model
-logger.info("Loading Faster-Whisper model '%s' on device '%s'...", WHISPER_MODEL_SIZE, WHISPER_DEVICE)
-whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE)
-logger.info("Whisper model loaded.")
+def init() -> None:
+    """Initialize TTS engine, Whisper model, and LLM client."""
+    global engine, whisper_model, openai_client
 
-# Initialize LLM Client
-if LLM_BACKEND == "ollama":
-    try:
-        import ollama
-        logger.info("Initialized Ollama backend with model '%s'.", OLLAMA_MODEL)
-    except ImportError:
-        logger.error("'ollama' package not installed. Please run: pip install ollama")
+    # Initialize TTS
+    engine = pyttsx3.init()
+    # Optional: tweak speech rate or voice
+    # rate = engine.getProperty('rate')
+    # engine.setProperty('rate', rate - 20)
+
+    # Initialize Whisper model
+    logger.info("Loading Faster-Whisper model '%s' on device '%s'...", WHISPER_MODEL_SIZE, WHISPER_DEVICE)
+    whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE)
+    logger.info("Whisper model loaded.")
+
+    # Initialize LLM Client
+    if LLM_BACKEND == "ollama":
+        try:
+            import ollama as _ollama
+            globals()["ollama"] = _ollama
+            logger.info("Initialized Ollama backend with model '%s'.", OLLAMA_MODEL)
+        except ImportError:
+            logger.error("'ollama' package not installed. Please run: pip install ollama")
+            exit(1)
+    elif LLM_BACKEND == "openai":
+        try:
+            from openai import OpenAI
+            client_kwargs = {"api_key": OPENAI_API_KEY}
+            if OPENAI_BASE_URL:
+                client_kwargs["base_url"] = OPENAI_BASE_URL
+            openai_client = OpenAI(**client_kwargs)
+            logger.info("Initialized OpenAI backend with model '%s'.", OPENAI_MODEL)
+        except ImportError:
+            logger.error("'openai' package not installed. Please run: pip install openai")
+            exit(1)
+    elif LLM_BACKEND == "opencode":
+        logger.info("Initialized Opencode backend. Ensure the 'opencode' CLI is installed and configured.")
+    else:
+        logger.error("Unknown LLM_BACKEND: %s", LLM_BACKEND)
         exit(1)
-elif LLM_BACKEND == "openai":
-    try:
-        from openai import OpenAI
-        client_kwargs = {"api_key": OPENAI_API_KEY}
-        if OPENAI_BASE_URL:
-            client_kwargs["base_url"] = OPENAI_BASE_URL
-        openai_client = OpenAI(**client_kwargs)
-        logger.info("Initialized OpenAI backend with model '%s'.", OPENAI_MODEL)
-    except ImportError:
-        logger.error("'openai' package not installed. Please run: pip install openai")
-        exit(1)
-elif LLM_BACKEND == "opencode":
-    logger.info("Initialized Opencode backend. Ensure the 'opencode' CLI is installed and configured.")
-else:
-    logger.error("Unknown LLM_BACKEND: %s", LLM_BACKEND)
-    exit(1)
 
 def get_rms(data: bytes) -> float:
     """Calculate the root mean square (RMS) energy of an audio chunk."""
@@ -324,6 +334,9 @@ def perform_handover() -> None:
         logger.warning("Handover failed: %s", e)
 
 def main() -> None:
+    # Initialize all components (TTS, Whisper, LLM client)
+    init()
+
     # Ensure memory directory exists with seed files
     ensure_memory_dir()
 
