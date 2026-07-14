@@ -1,5 +1,6 @@
 import os
 import struct
+import subprocess
 import wave
 import tempfile
 import numpy as np
@@ -230,7 +231,6 @@ def build_handover_message():
 
 def run_opencode(message):
     """Run a message through opencode CLI and return the response."""
-    import subprocess
     cmd = ["opencode", "run", message]
     if OPENCODE_SERVER_URL:
         cmd.extend(["--attach", OPENCODE_SERVER_URL])
