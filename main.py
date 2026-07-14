@@ -238,6 +238,56 @@ def build_memory_context(user_message: str) -> str:
 
     return "\n".join(context_parts)
 
+# Regex to match <memory file="..." mode="...">content</memory> blocks
+_MEMORY_TAG_RE = re.compile(
+    r'<memory\s+file="([^"]+)"\s+mode="(overwrite|append)">\s*\n?(.*?)\n?\s*</memory>',
+    re.DOTALL,
+)
+
+def parse_memory_updates(response: str) -> tuple[str, list[tuple[str, str, str]]]:
+    """Parse <memory> tags from LLM response.
+
+    Returns:
+        A tuple of (cleaned_response, updates) where updates is a list of
+        (relative_file_path, mode, content) tuples.
+    """
+    updates: list[tuple[str, str, str]] = []
+    for match in _MEMORY_TAG_RE.finditer(response):
+        file_path, mode, content = match.group(1), match.group(2), match.group(3)
+        updates.append((file_path, mode, content.strip()))
+
+    # Strip all <memory> tags from the response for TTS
+    cleaned = _MEMORY_TAG_RE.sub("", response).strip()
+    return cleaned, updates
+
+def apply_memory_updates(updates: list[tuple[str, str, str]]) -> None:
+    """Write parsed memory updates to disk.
+
+    Each update is a (relative_file_path, mode, content) tuple.
+    Only writes to files within MEMORY_DIR (rejects path traversal).
+    """
+    for file_rel, mode, content in updates:
+        # Resolve and validate the target path is within MEMORY_DIR
+        target = os.path.normpath(os.path.join(MEMORY_DIR, file_rel))
+        if not target.startswith(os.path.normpath(MEMORY_DIR) + os.sep) and \
+           target != os.path.normpath(MEMORY_DIR):
+            logger.warning("Rejected memory write outside MEMORY_DIR: %s", file_rel)
+            continue
+
+        # Ensure parent directory exists
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+
+        try:
+            if mode == "append":
+                with open(target, "a", encoding="utf-8") as f:
+                    f.write("\n" + content + "\n")
+            else:  # overwrite
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(content + "\n")
+            logger.info("Memory updated [%s]: %s", mode, file_rel)
+        except Exception as e:
+            logger.warning("Failed to write memory file %s: %s", file_rel, e)
+
 def build_system_prompt(user_message: str = "") -> str:
     """Build the system prompt with memory context included."""
     base_prompt = (
@@ -246,23 +296,68 @@ def build_system_prompt(user_message: str = "") -> str:
         "Do not use markdown like asterisks or code blocks if possible, as it will be read aloud."
     )
     memory_context = build_memory_context(user_message)
-    return f"{base_prompt}\n\n{memory_context}"
+    prompt = f"{base_prompt}\n\n{memory_context}"
+
+    # For ollama/openai, add instructions on how to emit memory updates via XML tags.
+    # Opencode has direct filesystem access via AGENTS.md so it doesn't need this.
+    if LLM_BACKEND in ("ollama", "openai"):
+        prompt += (
+            "\n\n[MEMORY UPDATE INSTRUCTIONS]\n"
+            "You can persist information across sessions by including <memory> tags in your response. "
+            "These tags are silently processed and will NOT be spoken aloud. "
+            "Use them whenever you need to save notes, update tasks, or record facts about the user.\n\n"
+            "Tag format:\n"
+            '<memory file="<path>" mode="overwrite|append">\ncontent here\n</memory>\n\n'
+            "Available files (path is relative to the memory directory):\n"
+            '- context/summary.md — Rolling summary of key facts and preferences. Use mode="overwrite". Keep under 50 lines.\n'
+            '- context/notes.md — Quick notes the user asked you to remember. Use mode="append" to add entries.\n'
+            '- tasks/todo.md — Active to-do items. Use mode="overwrite" with the full updated list.\n'
+            '- tasks/done.md — Completed tasks log. Use mode="append" to add entries with timestamps.\n'
+            '- context/last_session.md — Session handover (used at session end only). Use mode="overwrite".\n\n'
+            "Rules:\n"
+            "- When the user says 'remember that...' or 'make a note...', append to context/notes.md.\n"
+            "- When the user adds a task, overwrite tasks/todo.md with the full updated list.\n"
+            "- When a task is completed, remove it from tasks/todo.md and append it to tasks/done.md with a timestamp.\n"
+            "- When you learn new long-term facts about the user, overwrite context/summary.md with an updated summary.\n"
+            "- Always include the <memory> tags AFTER your spoken response.\n"
+            "- You may include multiple <memory> tags in a single response.\n"
+            "[END MEMORY UPDATE INSTRUCTIONS]"
+        )
+
+    return prompt
 
 def build_handover_message() -> str:
-    """Build the shutdown handover message to send to opencode."""
-    return (
-        "[SESSION ENDING — HANDOVER REQUIRED]\n"
-        "The voice session is ending. Please perform the following handover steps:\n"
-        "1. Write a detailed handover to memory/context/last_session.md covering:\n"
-        "   - Date/time of this session\n"
-        "   - Topics discussed and key decisions made\n"
-        "   - Any tasks that were added, completed, or are still in progress\n"
-        "   - Any open questions or unfinished threads the user may want to continue\n"
-        "   - User's apparent priorities if notable\n"
-        "2. Update memory/context/summary.md if any new long-term facts or preferences were learned.\n"
-        "3. Ensure memory/tasks/todo.md accurately reflects the current state of all tasks.\n"
-        "Respond with a brief confirmation of what you saved."
-    )
+    """Build the shutdown handover message.
+
+    For opencode: instructs the agent to write files directly.
+    For ollama/openai: instructs the LLM to emit <memory> tags.
+    """
+    if LLM_BACKEND == "opencode":
+        return (
+            "[SESSION ENDING — HANDOVER REQUIRED]\n"
+            "The voice session is ending. Please perform the following handover steps:\n"
+            "1. Write a detailed handover to memory/context/last_session.md covering:\n"
+            "   - Date/time of this session\n"
+            "   - Topics discussed and key decisions made\n"
+            "   - Any tasks that were added, completed, or are still in progress\n"
+            "   - Any open questions or unfinished threads the user may want to continue\n"
+            "   - User's apparent priorities if notable\n"
+            "2. Update memory/context/summary.md if any new long-term facts or preferences were learned.\n"
+            "3. Ensure memory/tasks/todo.md accurately reflects the current state of all tasks.\n"
+            "Respond with a brief confirmation of what you saved."
+        )
+    else:
+        return (
+            "[SESSION ENDING — HANDOVER REQUIRED]\n"
+            "The voice session is ending. Please perform the following handover steps using <memory> tags:\n"
+            '1. Write a detailed session handover using <memory file="context/last_session.md" mode="overwrite"> covering: '
+            "date/time, topics discussed, key decisions, tasks added/completed/in-progress, "
+            "open questions, and user priorities.\n"
+            "2. If you learned any new long-term facts or preferences, update the rolling summary using "
+            '<memory file="context/summary.md" mode="overwrite">.\n'
+            '3. Ensure the to-do list is accurate using <memory file="tasks/todo.md" mode="overwrite">.\n'
+            "Respond with a brief spoken confirmation of what you saved, followed by your <memory> tags."
+        )
 
 def run_opencode(message: str) -> str:
     """Run a message through opencode CLI and return the response."""
@@ -321,15 +416,36 @@ def query_llm(messages: list[dict[str, str]]) -> str:
     except Exception as e:
         return f"I encountered an error connecting to my brain. Details: {e}"
 
-def perform_handover() -> None:
-    """Send the handover message to opencode so it can save session state."""
-    if LLM_BACKEND != "opencode":
-        return
+def perform_handover(messages: list[dict[str, str]] | None = None) -> None:
+    """Perform session handover to persist state across sessions.
+
+    For opencode: sends handover message via run_opencode (direct filesystem access).
+    For ollama/openai: sends handover prompt via query_llm and parses <memory> tags.
+    """
     try:
         logger.info("Performing session handover...")
         handover_msg = build_handover_message()
-        response = run_opencode(handover_msg)
-        logger.info("Handover complete: %s", response)
+
+        if LLM_BACKEND == "opencode":
+            response = run_opencode(handover_msg)
+            logger.info("Handover complete: %s", response)
+        else:
+            # Build a temporary messages list with the handover prompt
+            handover_messages = [
+                {"role": "system", "content": build_system_prompt()}
+            ]
+            # Include recent conversation context if available
+            if messages and len(messages) > 1:
+                handover_messages.extend(messages[1:])  # skip original system prompt
+            handover_messages.append({"role": "user", "content": handover_msg})
+
+            response = query_llm(handover_messages)
+            cleaned, updates = parse_memory_updates(response)
+            if updates:
+                apply_memory_updates(updates)
+                logger.info("Handover complete: %d memory files updated.", len(updates))
+            else:
+                logger.warning("Handover produced no memory updates. Response: %s", cleaned)
     except Exception as e:
         logger.warning("Handover failed: %s", e)
 
@@ -371,7 +487,7 @@ def main() -> None:
                 if text.lower().strip() in ["exit", "quit", "stop listening", "goodbye",
                                              "exit.", "quit.", "goodbye."]:
                     speak("Saving session and shutting down. Goodbye!")
-                    perform_handover()
+                    perform_handover(messages)
                     break
                 
                 # Add user input to history
@@ -380,19 +496,24 @@ def main() -> None:
                 # Query LLM
                 response_text = query_llm(messages)
                 
-                # Add assistant response to history
-                messages.append({"role": "assistant", "content": response_text})
+                # Parse and apply any memory updates from the response
+                cleaned_response, memory_updates = parse_memory_updates(response_text)
+                if memory_updates:
+                    apply_memory_updates(memory_updates)
+                
+                # Add cleaned response (without memory tags) to history
+                messages.append({"role": "assistant", "content": cleaned_response})
                 
                 # Trim conversation history to prevent unbounded growth
                 messages = trim_messages(messages)
                 
-                # Speak response
-                speak(response_text)
+                # Speak cleaned response
+                speak(cleaned_response)
                 
             except KeyboardInterrupt:
                 logger.info("Stopping...")
                 speak("Saving session and shutting down. Goodbye!")
-                perform_handover()
+                perform_handover(messages)
                 break
             except Exception as e:
                 logger.error("An unexpected error occurred: %s", e, exc_info=True)
