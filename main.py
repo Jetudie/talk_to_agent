@@ -266,9 +266,10 @@ def query_llm(messages):
             # Build memory context and prepend it to the user's message
             memory_context = build_memory_context(latest_message)
             full_message = f"{memory_context}\n\nUser says: {latest_message}"
-            return run_opencode(full_message)
-    except subprocess.CalledProcessError as e:
-        return f"Opencode failed: {e.stderr}"
+            try:
+                return run_opencode(full_message)
+            except subprocess.CalledProcessError as e:
+                return f"Opencode failed: {e.stderr}"
     except Exception as e:
         return f"I encountered an error connecting to my brain. Details: {e}"
 
