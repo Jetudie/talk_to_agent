@@ -48,6 +48,7 @@ FORMAT = pyaudio.paInt16
 SILENCE_THRESHOLD = int(os.getenv("SILENCE_THRESHOLD", "500"))  # RMS energy threshold
 SILENCE_DURATION = float(os.getenv("SILENCE_DURATION", "1.5"))  # seconds of silence to stop recording
 MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "30"))  # max recording length
+MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))  # max user+assistant messages to keep
 
 # Initialize TTS
 engine = pyttsx3.init()
@@ -259,6 +260,15 @@ def run_opencode(message: str) -> str:
 
 # --- LLM Query ---
 
+def trim_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Trim conversation history to MAX_HISTORY_MESSAGES, preserving the system prompt."""
+    # messages[0] is the system prompt; the rest are user/assistant pairs
+    non_system = messages[1:]
+    if len(non_system) > MAX_HISTORY_MESSAGES:
+        messages = [messages[0]] + non_system[-MAX_HISTORY_MESSAGES:]
+        logger.debug("Trimmed conversation history to %d messages.", MAX_HISTORY_MESSAGES)
+    return messages
+
 def query_llm(messages: list[dict[str, str]]) -> str:
     """Sends the conversation history to the chosen LLM backend and returns the response string."""
     try:
@@ -341,6 +351,9 @@ def main() -> None:
                 
                 # Add assistant response to history
                 messages.append({"role": "assistant", "content": response_text})
+                
+                # Trim conversation history to prevent unbounded growth
+                messages = trim_messages(messages)
                 
                 # Speak response
                 speak(response_text)
