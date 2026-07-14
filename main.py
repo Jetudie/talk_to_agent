@@ -193,7 +193,7 @@ def ensure_memory_dir() -> None:
                 f.write(content)
 
 def build_memory_context(user_message: str) -> str:
-    """Build a memory context block to prepend to the user's message for opencode."""
+    """Build a memory context block from persistent memory files."""
     # Always-injected files
     last_session = read_memory_file(os.path.join(MEMORY_DIR, "context", "last_session.md"))
     summary = read_memory_file(os.path.join(MEMORY_DIR, "context", "summary.md"))
@@ -227,6 +227,16 @@ def build_memory_context(user_message: str) -> str:
     context_parts.extend(["", "[END MEMORY CONTEXT]"])
 
     return "\n".join(context_parts)
+
+def build_system_prompt(user_message: str = "") -> str:
+    """Build the system prompt with memory context included."""
+    base_prompt = (
+        "You are a helpful and concise voice assistant. "
+        "Since you are speaking, keep your answers relatively short and conversational. "
+        "Do not use markdown like asterisks or code blocks if possible, as it will be read aloud."
+    )
+    memory_context = build_memory_context(user_message)
+    return f"{base_prompt}\n\n{memory_context}"
 
 def build_handover_message() -> str:
     """Build the shutdown handover message to send to opencode."""
@@ -277,9 +287,13 @@ def query_llm(messages: list[dict[str, str]]) -> str:
     """Sends the conversation history to the chosen LLM backend and returns the response string."""
     try:
         if LLM_BACKEND == "ollama":
+            # Refresh system prompt with latest memory context
+            messages = [{"role": "system", "content": build_system_prompt(messages[-1]["content"])}] + messages[1:]
             response = ollama.chat(model=OLLAMA_MODEL, messages=messages)
             return response['message']['content']
         elif LLM_BACKEND == "openai":
+            # Refresh system prompt with latest memory context
+            messages = [{"role": "system", "content": build_system_prompt(messages[-1]["content"])}] + messages[1:]
             response = openai_client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages
@@ -317,7 +331,7 @@ def main() -> None:
     
     # Context window to keep track of conversation
     messages = [
-        {"role": "system", "content": "You are a helpful and concise voice assistant. Since you are speaking, keep your answers relatively short and conversational. Do not use markdown like asterisks or code blocks if possible, as it will be read aloud."}
+        {"role": "system", "content": build_system_prompt()}
     ]
     
     speak("I'm ready. You can start talking.")
