@@ -59,8 +59,11 @@ engine = pyttsx3.init()
 
 def speak(text: str) -> None:
     print(f"Agent: {text}")
-    engine.say(text)
-    engine.runAndWait()
+    try:
+        engine.say(text)
+        engine.runAndWait()
+    except Exception as e:
+        logger.warning("TTS failed to speak text: %s", e)
 
 # Initialize Whisper model
 logger.info("Loading Faster-Whisper model '%s' on device '%s'...", WHISPER_MODEL_SIZE, WHISPER_DEVICE)
