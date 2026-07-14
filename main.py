@@ -55,7 +55,7 @@ engine = pyttsx3.init()
 # rate = engine.getProperty('rate')
 # engine.setProperty('rate', rate - 20)
 
-def speak(text):
+def speak(text: str) -> None:
     print(f"Agent: {text}")
     engine.say(text)
     engine.runAndWait()
@@ -90,14 +90,14 @@ else:
     logger.error("Unknown LLM_BACKEND: %s", LLM_BACKEND)
     exit(1)
 
-def get_rms(data):
+def get_rms(data: bytes) -> float:
     """Calculate the root mean square (RMS) energy of an audio chunk."""
     count = len(data) // 2  # 16-bit = 2 bytes per sample
     shorts = struct.unpack(f"<{count}h", data)
     sum_squares = sum(s * s for s in shorts)
     return (sum_squares / count) ** 0.5 if count > 0 else 0
 
-def record_speech(pa):
+def record_speech(pa: pyaudio.PyAudio) -> bytes | None:
     """Record audio from the microphone until silence is detected. Returns raw PCM bytes or None."""
     stream = pa.open(
         format=FORMAT,
@@ -139,7 +139,7 @@ def record_speech(pa):
 
     return b"".join(frames)
 
-def transcribe(audio_bytes):
+def transcribe(audio_bytes: bytes) -> str:
     """Transcribe raw PCM audio bytes using Faster-Whisper. Returns the transcribed text."""
     # Convert raw PCM bytes to a float32 numpy array (what faster-whisper expects)
     audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -155,7 +155,7 @@ def transcribe(audio_bytes):
 
 # --- Memory System Helpers ---
 
-def read_memory_file(filepath):
+def read_memory_file(filepath: str) -> str:
     """Read a memory file and return its contents, or empty string if it doesn't exist."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
@@ -166,7 +166,7 @@ def read_memory_file(filepath):
         logger.warning("Could not read %s: %s", filepath, e)
         return ""
 
-def ensure_memory_dir():
+def ensure_memory_dir() -> None:
     """Create the memory directory structure and seed files if they don't exist."""
     dirs = [
         os.path.join(MEMORY_DIR, "context"),
@@ -187,7 +187,7 @@ def ensure_memory_dir():
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content)
 
-def build_memory_context(user_message):
+def build_memory_context(user_message: str) -> str:
     """Build a memory context block to prepend to the user's message for opencode."""
     # Always-injected files
     last_session = read_memory_file(os.path.join(MEMORY_DIR, "context", "last_session.md"))
@@ -223,7 +223,7 @@ def build_memory_context(user_message):
 
     return "\n".join(context_parts)
 
-def build_handover_message():
+def build_handover_message() -> str:
     """Build the shutdown handover message to send to opencode."""
     return (
         "[SESSION ENDING — HANDOVER REQUIRED]\n"
@@ -239,7 +239,7 @@ def build_handover_message():
         "Respond with a brief confirmation of what you saved."
     )
 
-def run_opencode(message):
+def run_opencode(message: str) -> str:
     """Run a message through opencode CLI and return the response."""
     cmd = ["opencode", "run", message]
     if OPENCODE_SERVER_URL:
@@ -259,7 +259,7 @@ def run_opencode(message):
 
 # --- LLM Query ---
 
-def query_llm(messages):
+def query_llm(messages: list[dict[str, str]]) -> str:
     """Sends the conversation history to the chosen LLM backend and returns the response string."""
     try:
         if LLM_BACKEND == "ollama":
@@ -283,7 +283,7 @@ def query_llm(messages):
     except Exception as e:
         return f"I encountered an error connecting to my brain. Details: {e}"
 
-def perform_handover():
+def perform_handover() -> None:
     """Send the handover message to opencode so it can save session state."""
     if LLM_BACKEND != "opencode":
         return
@@ -295,7 +295,7 @@ def perform_handover():
     except Exception as e:
         logger.warning("Handover failed: %s", e)
 
-def main():
+def main() -> None:
     # Ensure memory directory exists with seed files
     ensure_memory_dir()
 
