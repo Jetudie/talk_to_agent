@@ -1,3 +1,4 @@
+import logging
 import os
 import struct
 import subprocess
@@ -11,6 +12,15 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file if present
 load_dotenv()
+
+# Logging configuration
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 # Configuration
 LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama").lower()
@@ -51,17 +61,17 @@ def speak(text):
     engine.runAndWait()
 
 # Initialize Whisper model
-print(f"Loading Faster-Whisper model '{WHISPER_MODEL_SIZE}' on device '{WHISPER_DEVICE}'...")
+logger.info("Loading Faster-Whisper model '%s' on device '%s'...", WHISPER_MODEL_SIZE, WHISPER_DEVICE)
 whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE)
-print("Whisper model loaded.")
+logger.info("Whisper model loaded.")
 
 # Initialize LLM Client
 if LLM_BACKEND == "ollama":
     try:
         import ollama
-        print(f"Initialized Ollama backend with model '{OLLAMA_MODEL}'.")
+        logger.info("Initialized Ollama backend with model '%s'.", OLLAMA_MODEL)
     except ImportError:
-        print("Error: 'ollama' package not installed. Please run: pip install ollama")
+        logger.error("'ollama' package not installed. Please run: pip install ollama")
         exit(1)
 elif LLM_BACKEND == "openai":
     try:
@@ -70,14 +80,14 @@ elif LLM_BACKEND == "openai":
         if OPENAI_BASE_URL:
             client_kwargs["base_url"] = OPENAI_BASE_URL
         openai_client = OpenAI(**client_kwargs)
-        print(f"Initialized OpenAI backend with model '{OPENAI_MODEL}'.")
+        logger.info("Initialized OpenAI backend with model '%s'.", OPENAI_MODEL)
     except ImportError:
-        print("Error: 'openai' package not installed. Please run: pip install openai")
+        logger.error("'openai' package not installed. Please run: pip install openai")
         exit(1)
 elif LLM_BACKEND == "opencode":
-    print("Initialized Opencode backend. Ensure the 'opencode' CLI is installed and configured.")
+    logger.info("Initialized Opencode backend. Ensure the 'opencode' CLI is installed and configured.")
 else:
-    print(f"Unknown LLM_BACKEND: {LLM_BACKEND}")
+    logger.error("Unknown LLM_BACKEND: %s", LLM_BACKEND)
     exit(1)
 
 def get_rms(data):
@@ -153,7 +163,7 @@ def read_memory_file(filepath):
     except FileNotFoundError:
         return ""
     except Exception as e:
-        print(f"Warning: Could not read {filepath}: {e}")
+        logger.warning("Could not read %s: %s", filepath, e)
         return ""
 
 def ensure_memory_dir():
@@ -278,12 +288,12 @@ def perform_handover():
     if LLM_BACKEND != "opencode":
         return
     try:
-        print("Performing session handover...")
+        logger.info("Performing session handover...")
         handover_msg = build_handover_message()
         response = run_opencode(handover_msg)
-        print(f"Handover complete: {response}")
+        logger.info("Handover complete: %s", response)
     except Exception as e:
-        print(f"Warning: Handover failed: {e}")
+        logger.warning("Handover failed: %s", e)
 
 def main():
     # Ensure memory directory exists with seed files
@@ -301,17 +311,17 @@ def main():
     try:
         while True:
             try:
-                print("\nListening...")
+                logger.debug("Listening...")
                 audio_bytes = record_speech(pa)
                 
                 if audio_bytes is None:
                     continue  # No speech detected, keep listening
                 
-                print("Transcribing...")
+                logger.debug("Transcribing...")
                 text = transcribe(audio_bytes)
                 
                 if not text:
-                    print("(empty transcription)")
+                    logger.debug("Empty transcription, skipping.")
                     continue
                     
                 print(f"You: {text}")
@@ -336,12 +346,12 @@ def main():
                 speak(response_text)
                 
             except KeyboardInterrupt:
-                print("\nStopping...")
+                logger.info("Stopping...")
                 speak("Saving session and shutting down. Goodbye!")
                 perform_handover()
                 break
             except Exception as e:
-                print(f"An unexpected error occurred: {e}")
+                logger.error("An unexpected error occurred: %s", e, exc_info=True)
     finally:
         pa.terminate()
 
