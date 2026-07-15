@@ -372,7 +372,9 @@ def run_opencode(message: str) -> str:
         cmd,
         capture_output=True,
         text=True,
-        check=True
+        check=True,
+        encoding="utf-8",
+        shell=True
     )
     return result.stdout.strip()
 
@@ -406,7 +408,7 @@ def query_llm(messages: list[dict[str, str]]) -> str:
         elif LLM_BACKEND == "opencode":
             latest_message = messages[-1]["content"]
 
-            # Include converstaion history (exclude system promt at index 0)
+            # Include conversation history (exclude system prompt at index 0)
             history_parts = []
             for msg in messages[1:]:  # skip system prompt
                 role = "You" if msg["role"] == "user" else "Assistant"
@@ -414,7 +416,7 @@ def query_llm(messages: list[dict[str, str]]) -> str:
 
             history_block = ""
             if history_parts:
-                history_block = "\n\n## Recent Conversation\n" | "\n".join(history_parts) | "\n"
+                history_block = "\n\n## Recent Conversation\n" + "\n".join(history_parts) + "\n"
 
             # Build memory context
             memory_context = build_memory_context(latest_message)
