@@ -17,9 +17,12 @@ You have access to a `memory/` directory for persistent storage. Use it proactiv
 ```
 memory/
 ├── context/
-│   ├── summary.md          — Rolling summary of key facts, preferences, recurring topics
+│   ├── summary.md          — Active rolling summary of recent key facts (kept concise)
+│   ├── summary_archive.md  — Long-term archive of older facts rotated out of summary.md
 │   ├── notes.md            — Quick notes the user asked you to remember
-│   └── last_session.md     — Detailed handover from the most recent session
+│   ├── last_session.md     — Detailed handover from the most recent session
+│   └── sessions/           — Archive of previous session handovers (timestamped)
+├── episodes/               — Daily conversation logs (YYYY-MM-DD.md)
 └── tasks/
     ├── todo.md             — Active to-do items
     └── done.md             — Completed tasks with timestamps
@@ -28,10 +31,14 @@ memory/
 ### Rules for Each File
 
 #### `memory/context/summary.md`
-- Contains a concise summary of important long-term information about the user.
+- Contains a concise, **active** summary of the most important and recent facts about the user.
 - Update this when you learn new preferences, recurring topics, or important facts.
-- **Keep it under 50 lines.** Summarize and condense — do not append raw conversation transcripts.
-- If it grows too long, rewrite it to be more concise while preserving all key facts.
+- **Keep it under 50 lines.** When it grows too long, move older or less relevant facts to `summary_archive.md` before rewriting.
+
+#### `memory/context/summary_archive.md`
+- Long-term archive for facts rotated out of `summary.md`.
+- Append older facts here when condensing the active summary.
+- This file grows over time. Reorganize periodically if it becomes unwieldy, but do not delete entries.
 
 #### `memory/context/notes.md`
 - For explicit "remember that..." or "make a note..." requests from the user.
