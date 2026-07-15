@@ -189,6 +189,7 @@ def ensure_memory_dir() -> None:
     dirs = [
         os.path.join(MEMORY_DIR, "context"),
         os.path.join(MEMORY_DIR, "context", "sessions"),
+        os.path.join(MEMORY_DIR, "episodes"),
         os.path.join(MEMORY_DIR, "tasks"),
     ]
     for d in dirs:
@@ -256,6 +257,36 @@ def get_recent_sessions(count: int = SESSION_CONTEXT_COUNT) -> str:
         if content:
             parts.append(f"### Session {name}\n{content}")
     return "\n\n".join(parts)
+
+def log_episode(user_text: str, assistant_text: str) -> None:
+    """Append a user/assistant exchange to today's episode log.
+
+    Episodes are stored as daily files in memory/episodes/YYYY-MM-DD.md.
+    Each entry includes a timestamp for precise recall.
+    """
+    episodes_dir = os.path.join(MEMORY_DIR, "episodes")
+    os.makedirs(episodes_dir, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    episode_path = os.path.join(episodes_dir, f"{today}.md")
+    timestamp = datetime.now().strftime("%H:%M:%S")
+
+    entry = (
+        f"\n---\n"
+        f"**[{timestamp}]**\n\n"
+        f"User: {user_text}\n\n"
+        f"Assistant: {assistant_text}\n"
+    )
+
+    try:
+        # Create file with header if it doesn't exist
+        if not os.path.exists(episode_path):
+            with open(episode_path, "w", encoding="utf-8") as f:
+                f.write(f"# Episode Log — {today}\n")
+        with open(episode_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+        logger.debug("Logged episode to %s", episode_path)
+    except Exception as e:
+        logger.warning("Failed to log episode: %s", e)
 
 def build_memory_context(user_message: str) -> str:
     """Build a memory context block from persistent memory files."""
@@ -590,6 +621,9 @@ def main() -> None:
                 
                 # Speak cleaned response
                 speak(cleaned_response)
+                
+                # Log the exchange to episodic memory
+                log_episode(text, cleaned_response)
                 
             except KeyboardInterrupt:
                 logger.info("Stopping...")
