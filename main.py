@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 import re
@@ -5,6 +6,7 @@ import struct
 import subprocess
 import wave
 import tempfile
+from datetime import datetime
 import numpy as np
 import pyaudio
 import pyttsx3
@@ -35,6 +37,8 @@ OPENCODE_SERVER_URL = os.getenv("OPENCODE_SERVER_URL", "http://127.0.0.1:4096")
 
 # Memory configuration
 MEMORY_DIR = os.getenv("MEMORY_DIR", "memory")
+MAX_SESSION_ARCHIVES = int(os.getenv("MAX_SESSION_ARCHIVES", "10"))  # max archived sessions to keep on disk
+SESSION_CONTEXT_COUNT = int(os.getenv("SESSION_CONTEXT_COUNT", "3"))  # recent sessions to inject into context
 
 # Whisper STT configuration
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
@@ -184,6 +188,7 @@ def ensure_memory_dir() -> None:
     """Create the memory directory structure and seed files if they don't exist."""
     dirs = [
         os.path.join(MEMORY_DIR, "context"),
+        os.path.join(MEMORY_DIR, "context", "sessions"),
         os.path.join(MEMORY_DIR, "tasks"),
     ]
     for d in dirs:
@@ -200,6 +205,57 @@ def ensure_memory_dir() -> None:
         if not os.path.exists(filepath):
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content)
+
+def archive_last_session() -> None:
+    """Archive the current last_session.md before it gets overwritten.
+
+    Saves to memory/context/sessions/<timestamp>.md and prunes old archives
+    beyond MAX_SESSION_ARCHIVES.
+    """
+    last_session_path = os.path.join(MEMORY_DIR, "context", "last_session.md")
+    content = read_memory_file(last_session_path)
+    if not content or "No previous session recorded" in content:
+        return  # nothing worth archiving
+
+    sessions_dir = os.path.join(MEMORY_DIR, "context", "sessions")
+    os.makedirs(sessions_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    archive_path = os.path.join(sessions_dir, f"{timestamp}.md")
+    try:
+        with open(archive_path, "w", encoding="utf-8") as f:
+            f.write(content + "\n")
+        logger.info("Archived last session to %s", archive_path)
+    except Exception as e:
+        logger.warning("Failed to archive last session: %s", e)
+        return
+
+    # Prune old archives beyond MAX_SESSION_ARCHIVES
+    archives = sorted(glob.glob(os.path.join(sessions_dir, "*.md")))
+    if len(archives) > MAX_SESSION_ARCHIVES:
+        for old in archives[:len(archives) - MAX_SESSION_ARCHIVES]:
+            try:
+                os.remove(old)
+                logger.debug("Pruned old session archive: %s", old)
+            except Exception as e:
+                logger.warning("Failed to prune archive %s: %s", old, e)
+
+def get_recent_sessions(count: int = SESSION_CONTEXT_COUNT) -> str:
+    """Read the most recent archived sessions and return them as context."""
+    sessions_dir = os.path.join(MEMORY_DIR, "context", "sessions")
+    if not os.path.isdir(sessions_dir):
+        return ""
+    archives = sorted(glob.glob(os.path.join(sessions_dir, "*.md")))
+    recent = archives[-count:] if len(archives) >= count else archives
+    if not recent:
+        return ""
+
+    parts = []
+    for path in reversed(recent):  # newest first
+        name = os.path.splitext(os.path.basename(path))[0]
+        content = read_memory_file(path)
+        if content:
+            parts.append(f"### Session {name}\n{content}")
+    return "\n\n".join(parts)
 
 def build_memory_context(user_message: str) -> str:
     """Build a memory context block from persistent memory files."""
@@ -232,6 +288,11 @@ def build_memory_context(user_message: str) -> str:
     if include_done:
         done = read_memory_file(os.path.join(MEMORY_DIR, "tasks", "done.md"))
         context_parts.extend(["", "## Completed Tasks", done])
+
+    # Include recent session archives for multi-session recall
+    recent_sessions = get_recent_sessions()
+    if recent_sessions:
+        context_parts.extend(["", "## Previous Sessions (recent)", recent_sessions])
 
     context_parts.extend(["", "[END MEMORY CONTEXT]"])
 
@@ -442,6 +503,8 @@ def perform_handover(messages: list[dict[str, str]] | None = None) -> None:
     """
     try:
         logger.info("Performing session handover...")
+        # Archive the current session before it gets overwritten
+        archive_last_session()
         handover_msg = build_handover_message()
 
         if LLM_BACKEND == "opencode":
