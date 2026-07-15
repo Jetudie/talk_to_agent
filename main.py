@@ -52,13 +52,18 @@ MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "30"))  # max recordi
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))  # max user+assistant messages to keep
 
 # Module-level references (initialized in init())
-engine = None
 whisper_model = None
 openai_client = None
 
 def speak(text: str) -> None:
     print(f"Agent: {text}")
     try:
+        # Initialize TTS
+        engine = pyttsx3.init()
+        # Optional: tweak speech rate or voice
+        # rate = engine.getProperty('rate')
+        # engine.setProperty('rate', rate - 20)
+
         engine.say(text)
         engine.runAndWait()
     except Exception as e:
@@ -66,13 +71,7 @@ def speak(text: str) -> None:
 
 def init() -> None:
     """Initialize TTS engine, Whisper model, and LLM client."""
-    global engine, whisper_model, openai_client
-
-    # Initialize TTS
-    engine = pyttsx3.init()
-    # Optional: tweak speech rate or voice
-    # rate = engine.getProperty('rate')
-    # engine.setProperty('rate', rate - 20)
+    global whisper_model, openai_client
 
     # Initialize Whisper model
     logger.info("Loading Faster-Whisper model '%s' on device '%s'...", WHISPER_MODEL_SIZE, WHISPER_DEVICE)
@@ -406,9 +405,26 @@ def query_llm(messages: list[dict[str, str]]) -> str:
             return response.choices[0].message.content
         elif LLM_BACKEND == "opencode":
             latest_message = messages[-1]["content"]
-            # Build memory context and prepend it to the user's message
+
+            # Include converstaion history (exclude system promt at index 0)
+            history_parts = []
+            for msg in messages[1:]:  # skip system prompt
+                role = "You" if msg["role"] == "user" else "Assistant"
+                history_parts.append(f"{role}: {msg['content']}")
+
+            history_block = ""
+            if history_parts:
+                history_block = "\n\n## Recent Conversation\n" | "\n".join(history_parts) | "\n"
+
+            # Build memory context
             memory_context = build_memory_context(latest_message)
-            full_message = f"{memory_context}\n\nUser says: {latest_message}"
+
+            full_message = (
+                f"User's message: {latest_message}\n"
+                f"{history_block}"
+                f"\n{memory_context}"
+            )
+
             try:
                 return run_opencode(full_message)
             except subprocess.CalledProcessError as e:
