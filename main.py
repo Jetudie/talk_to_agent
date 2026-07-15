@@ -196,7 +196,8 @@ def ensure_memory_dir() -> None:
         os.makedirs(d, exist_ok=True)
 
     seed_files = {
-        os.path.join(MEMORY_DIR, "context", "summary.md"): "# Rolling Summary\n\n*This file is maintained by the voice agent. It contains a concise summary of key facts, user preferences, and recurring topics learned across sessions.*\n",
+        os.path.join(MEMORY_DIR, "context", "summary.md"): "# Rolling Summary\n\n*Active summary of recent and important facts about the user. Keep concise — rotate older facts to summary_archive.md.*\n",
+        os.path.join(MEMORY_DIR, "context", "summary_archive.md"): "# Summary Archive\n\n*Long-term archive of older facts, preferences, and context rotated out of the active summary.*\n",
         os.path.join(MEMORY_DIR, "context", "notes.md"): "# Notes\n\n*This file is maintained by the voice agent. It stores quick notes and facts the user asked the agent to remember.*\n",
         os.path.join(MEMORY_DIR, "context", "last_session.md"): "# Last Session\n\nNo previous session recorded.\n",
         os.path.join(MEMORY_DIR, "tasks", "todo.md"): "# To-Do List\n\n*This file is maintained by the voice agent. It contains active tasks.*\n",
@@ -306,8 +307,11 @@ def build_memory_context(user_message: str) -> str:
         "## Last Session Handover",
         last_session,
         "",
-        "## Rolling Summary",
+        "## Rolling Summary (active)",
         summary,
+        "",
+        "## Summary Archive (long-term)",
+        read_memory_file(os.path.join(MEMORY_DIR, "context", "summary_archive.md")),
         "",
         "## Notes",
         notes,
@@ -400,7 +404,8 @@ def build_system_prompt(user_message: str = "") -> str:
             "Tag format:\n"
             '<memory file="<path>" mode="overwrite|append">\ncontent here\n</memory>\n\n'
             "Available files (path is relative to the memory directory):\n"
-            '- context/summary.md — Rolling summary of key facts and preferences. Use mode="overwrite". Keep under 50 lines.\n'
+            '- context/summary.md — Active rolling summary of recent key facts (keep under 50 lines). Use mode="overwrite".\n'
+            '- context/summary_archive.md — Long-term archive for older facts rotated out of summary.md. Use mode="append" to add, or mode="overwrite" to reorganize.\n'
             '- context/notes.md — Quick notes the user asked you to remember. Use mode="append" to add entries.\n'
             '- tasks/todo.md — Active to-do items. Use mode="overwrite" with the full updated list.\n'
             '- tasks/done.md — Completed tasks log. Use mode="append" to add entries with timestamps.\n'
@@ -409,7 +414,8 @@ def build_system_prompt(user_message: str = "") -> str:
             "- When the user says 'remember that...' or 'make a note...', append to context/notes.md.\n"
             "- When the user adds a task, overwrite tasks/todo.md with the full updated list.\n"
             "- When a task is completed, remove it from tasks/todo.md and append it to tasks/done.md with a timestamp.\n"
-            "- When you learn new long-term facts about the user, overwrite context/summary.md with an updated summary.\n"
+            "- When updating summary.md, keep it under 50 lines. If it's getting long, move older or less relevant "
+            "facts to context/summary_archive.md (append) before overwriting summary.md with the condensed version.\n"
             "- Always include the <memory> tags AFTER your spoken response.\n"
             "- You may include multiple <memory> tags in a single response.\n"
             "[END MEMORY UPDATE INSTRUCTIONS]"
