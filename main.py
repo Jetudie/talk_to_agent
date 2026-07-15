@@ -289,6 +289,84 @@ def log_episode(user_text: str, assistant_text: str) -> None:
     except Exception as e:
         logger.warning("Failed to log episode: %s", e)
 
+# Stop words to filter out when extracting search keywords
+_STOP_WORDS = frozenset([
+    "i", "me", "my", "we", "you", "your", "it", "its", "he", "she", "they",
+    "the", "a", "an", "is", "am", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+    "can", "may", "might", "shall", "to", "of", "in", "for", "on", "with", "at",
+    "by", "from", "as", "into", "about", "that", "this", "what", "which", "who",
+    "when", "where", "how", "not", "no", "but", "or", "and", "if", "so", "than",
+    "too", "very", "just", "also", "up", "out", "there", "here", "all", "some",
+    "any", "each", "more", "most", "other", "then", "now", "only", "even", "still",
+    "tell", "said", "say", "know", "think", "want", "like", "get", "go", "make",
+    "see", "come", "take", "give", "good", "new", "well", "way", "thing", "much",
+    "right", "great", "old", "big", "little", "long", "time", "day", "back",
+])
+
+MAX_RETRIEVAL_SNIPPETS = int(os.getenv("MAX_RETRIEVAL_SNIPPETS", "5"))  # max relevant snippets to inject
+
+def _extract_keywords(text: str) -> list[str]:
+    """Extract meaningful keywords from text by removing stop words and short tokens."""
+    words = re.findall(r"[a-zA-Z]+", text.lower())
+    return [w for w in words if w not in _STOP_WORDS and len(w) > 2]
+
+def search_episodes(query: str, max_results: int = MAX_RETRIEVAL_SNIPPETS) -> str:
+    """Search episode logs and session archives for content relevant to the query.
+
+    Uses keyword matching with scoring: each passage (separated by --- in episodes,
+    or full file for sessions) is scored by the number of matching keywords.
+    Returns the top-N most relevant snippets formatted for injection into context.
+    """
+    keywords = _extract_keywords(query)
+    if not keywords:
+        return ""
+
+    scored_snippets: list[tuple[int, str, str]] = []  # (score, source_label, snippet)
+
+    # Search episode logs
+    episodes_dir = os.path.join(MEMORY_DIR, "episodes")
+    if os.path.isdir(episodes_dir):
+        for ep_file in sorted(glob.glob(os.path.join(episodes_dir, "*.md")), reverse=True):
+            date_label = os.path.splitext(os.path.basename(ep_file))[0]
+            content = read_memory_file(ep_file)
+            if not content:
+                continue
+            # Split into individual exchanges (separated by ---)
+            passages = [p.strip() for p in content.split("---") if p.strip()]
+            for passage in passages:
+                passage_lower = passage.lower()
+                score = sum(1 for kw in keywords if kw in passage_lower)
+                if score > 0:
+                    scored_snippets.append((score, f"Episode {date_label}", passage))
+
+    # Search session archives
+    sessions_dir = os.path.join(MEMORY_DIR, "context", "sessions")
+    if os.path.isdir(sessions_dir):
+        for sess_file in sorted(glob.glob(os.path.join(sessions_dir, "*.md")), reverse=True):
+            sess_label = os.path.splitext(os.path.basename(sess_file))[0]
+            content = read_memory_file(sess_file)
+            if not content:
+                continue
+            content_lower = content.lower()
+            score = sum(1 for kw in keywords if kw in content_lower)
+            if score > 0:
+                # Truncate long session summaries to keep context manageable
+                truncated = content[:500] + "..." if len(content) > 500 else content
+                scored_snippets.append((score, f"Session {sess_label}", truncated))
+
+    if not scored_snippets:
+        return ""
+
+    # Sort by score descending and take top results
+    scored_snippets.sort(key=lambda x: x[0], reverse=True)
+    top = scored_snippets[:max_results]
+
+    parts = []
+    for score, source, snippet in top:
+        parts.append(f"[From: {source} | relevance: {score}]\n{snippet}")
+    return "\n\n".join(parts)
+
 def build_memory_context(user_message: str) -> str:
     """Build a memory context block from persistent memory files."""
     # Always-injected files
@@ -328,6 +406,12 @@ def build_memory_context(user_message: str) -> str:
     recent_sessions = get_recent_sessions()
     if recent_sessions:
         context_parts.extend(["", "## Previous Sessions (recent)", recent_sessions])
+
+    # Semantic retrieval: search episodes and old sessions for relevant content
+    if user_message:
+        relevant = search_episodes(user_message)
+        if relevant:
+            context_parts.extend(["", "## Relevant Past Conversations", relevant])
 
     context_parts.extend(["", "[END MEMORY CONTEXT]"])
 
