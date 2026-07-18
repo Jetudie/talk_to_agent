@@ -477,68 +477,48 @@ def build_system_prompt(user_message: str = "") -> str:
     memory_context = build_memory_context(user_message)
     prompt = f"{base_prompt}\n\n{memory_context}"
 
-    # For ollama/openai, add instructions on how to emit memory updates via XML tags.
-    # Opencode has direct filesystem access via AGENTS.md so it doesn't need this.
-    if LLM_BACKEND in ("ollama", "openai"):
-        prompt += (
-            "\n\n[MEMORY UPDATE INSTRUCTIONS]\n"
-            "You can persist information across sessions by including <memory> tags in your response. "
-            "These tags are silently processed and will NOT be spoken aloud. "
-            "Use them whenever you need to save notes, update tasks, or record facts about the user.\n\n"
-            "Tag format:\n"
-            '<memory file="<path>" mode="overwrite|append">\ncontent here\n</memory>\n\n'
-            "Available files (path is relative to the memory directory):\n"
-            '- context/summary.md — Active rolling summary of recent key facts (keep under 50 lines). Use mode="overwrite".\n'
-            '- context/summary_archive.md — Long-term archive for older facts rotated out of summary.md. Use mode="append" to add, or mode="overwrite" to reorganize.\n'
-            '- context/notes.md — Quick notes the user asked you to remember. Use mode="append" to add entries.\n'
-            '- tasks/todo.md — Active to-do items. Use mode="overwrite" with the full updated list.\n'
-            '- tasks/done.md — Completed tasks log. Use mode="append" to add entries with timestamps.\n'
-            '- context/last_session.md — Session handover (used at session end only). Use mode="overwrite".\n\n'
-            "Rules:\n"
-            "- When the user says 'remember that...' or 'make a note...', append to context/notes.md.\n"
-            "- When the user adds a task, overwrite tasks/todo.md with the full updated list.\n"
-            "- When a task is completed, remove it from tasks/todo.md and append it to tasks/done.md with a timestamp.\n"
-            "- When updating summary.md, keep it under 50 lines. If it's getting long, move older or less relevant "
-            "facts to context/summary_archive.md (append) before overwriting summary.md with the condensed version.\n"
-            "- Always include the <memory> tags AFTER your spoken response.\n"
-            "- You may include multiple <memory> tags in a single response.\n"
-            "[END MEMORY UPDATE INSTRUCTIONS]"
-        )
+    # Add instructions on how to emit memory updates via XML tags.
+    # These tags are parsed by the Python code and applied to disk for all backends.
+    prompt += (
+        "\n\n[MEMORY UPDATE INSTRUCTIONS]\n"
+        "You can persist information across sessions by including <memory> tags in your response. "
+        "These tags are silently processed and will NOT be spoken aloud. "
+        "Use them whenever you need to save notes, update tasks, or record facts about the user.\n\n"
+        "Tag format:\n"
+        '<memory file="<path>" mode="overwrite|append">\ncontent here\n</memory>\n\n'
+        "Available files (path is relative to the memory directory):\n"
+        '- context/summary.md \u2014 Active rolling summary of recent key facts (keep under 50 lines). Use mode="overwrite".\n'
+        '- context/summary_archive.md \u2014 Long-term archive for older facts rotated out of summary.md. Use mode="append" to add, or mode="overwrite" to reorganize.\n'
+        '- context/notes.md \u2014 Quick notes the user asked you to remember. Use mode="append" to add entries.\n'
+        '- tasks/todo.md \u2014 Active to-do items. Use mode="overwrite" with the full updated list.\n'
+        '- tasks/done.md \u2014 Completed tasks log. Use mode="append" to add entries with timestamps.\n'
+        '- context/last_session.md \u2014 Session handover (used at session end only). Use mode="overwrite".\n\n'
+        "Rules:\n"
+        "- When the user says 'remember that...' or 'make a note...', append to context/notes.md.\n"
+        "- When the user adds a task, overwrite tasks/todo.md with the full updated list.\n"
+        "- When a task is completed, remove it from tasks/todo.md and append it to tasks/done.md with a timestamp.\n"
+        "- When updating summary.md, keep it under 50 lines. If it's getting long, move older or less relevant "
+        "facts to context/summary_archive.md (append) before overwriting summary.md with the condensed version.\n"
+        "- Always include the <memory> tags AFTER your spoken response.\n"
+        "- You may include multiple <memory> tags in a single response.\n"
+        "[END MEMORY UPDATE INSTRUCTIONS]"
+    )
 
     return prompt
 
 def build_handover_message() -> str:
-    """Build the shutdown handover message.
-
-    For opencode: instructs the agent to write files directly.
-    For ollama/openai: instructs the LLM to emit <memory> tags.
-    """
-    if LLM_BACKEND == "opencode":
-        return (
-            "[SESSION ENDING — HANDOVER REQUIRED]\n"
-            "The voice session is ending. Please perform the following handover steps:\n"
-            "1. Write a detailed handover to memory/context/last_session.md covering:\n"
-            "   - Date/time of this session\n"
-            "   - Topics discussed and key decisions made\n"
-            "   - Any tasks that were added, completed, or are still in progress\n"
-            "   - Any open questions or unfinished threads the user may want to continue\n"
-            "   - User's apparent priorities if notable\n"
-            "2. Update memory/context/summary.md if any new long-term facts or preferences were learned.\n"
-            "3. Ensure memory/tasks/todo.md accurately reflects the current state of all tasks.\n"
-            "Respond with a brief confirmation of what you saved."
-        )
-    else:
-        return (
-            "[SESSION ENDING — HANDOVER REQUIRED]\n"
-            "The voice session is ending. Please perform the following handover steps using <memory> tags:\n"
-            '1. Write a detailed session handover using <memory file="context/last_session.md" mode="overwrite"> covering: '
-            "date/time, topics discussed, key decisions, tasks added/completed/in-progress, "
-            "open questions, and user priorities.\n"
-            "2. If you learned any new long-term facts or preferences, update the rolling summary using "
-            '<memory file="context/summary.md" mode="overwrite">.\n'
-            '3. Ensure the to-do list is accurate using <memory file="tasks/todo.md" mode="overwrite">.\n'
-            "Respond with a brief spoken confirmation of what you saved, followed by your <memory> tags."
-        )
+    """Build the shutdown handover message instructing the LLM to emit <memory> tags."""
+    return (
+        "[SESSION ENDING \u2014 HANDOVER REQUIRED]\n"
+        "The voice session is ending. Please perform the following handover steps using <memory> tags:\n"
+        '1. Write a detailed session handover using <memory file="context/last_session.md" mode="overwrite"> covering: '
+        "date/time, topics discussed, key decisions, tasks added/completed/in-progress, "
+        "open questions, and user priorities.\n"
+        "2. If you learned any new long-term facts or preferences, update the rolling summary using "
+        '<memory file="context/summary.md" mode="overwrite">.\n'
+        '3. Ensure the to-do list is accurate using <memory file="tasks/todo.md" mode="overwrite">.\n'
+        "Respond with a brief spoken confirmation of what you saved, followed by your <memory> tags."
+    )
 
 def run_opencode(message: str) -> str:
     """Run a message through opencode CLI and return the response."""
@@ -600,13 +580,13 @@ def query_llm(messages: list[dict[str, str]]) -> str:
             if history_parts:
                 history_block = "\n\n## Recent Conversation\n" + "\n".join(history_parts) + "\n"
 
-            # Build memory context
-            memory_context = build_memory_context(latest_message)
+            # Use the full system prompt (includes memory context + memory update instructions)
+            system_prompt = build_system_prompt(latest_message)
 
             full_message = (
                 f"User's message: {latest_message}\n"
                 f"{history_block}"
-                f"\n{memory_context}"
+                f"\n{system_prompt}"
             )
 
             try:
@@ -619,8 +599,8 @@ def query_llm(messages: list[dict[str, str]]) -> str:
 def perform_handover(messages: list[dict[str, str]] | None = None) -> None:
     """Perform session handover to persist state across sessions.
 
-    For opencode: sends handover message via run_opencode (direct filesystem access).
-    For ollama/openai: sends handover prompt via query_llm and parses <memory> tags.
+    Sends a handover prompt via query_llm and parses <memory> tags from the response.
+    Works identically for all backends.
     """
     try:
         logger.info("Performing session handover...")
@@ -628,26 +608,22 @@ def perform_handover(messages: list[dict[str, str]] | None = None) -> None:
         archive_last_session()
         handover_msg = build_handover_message()
 
-        if LLM_BACKEND == "opencode":
-            response = run_opencode(handover_msg)
-            logger.info("Handover complete: %s", response)
-        else:
-            # Build a temporary messages list with the handover prompt
-            handover_messages = [
-                {"role": "system", "content": build_system_prompt()}
-            ]
-            # Include recent conversation context if available
-            if messages and len(messages) > 1:
-                handover_messages.extend(messages[1:])  # skip original system prompt
-            handover_messages.append({"role": "user", "content": handover_msg})
+        # Build a temporary messages list with the handover prompt
+        handover_messages = [
+            {"role": "system", "content": build_system_prompt()}
+        ]
+        # Include recent conversation context if available
+        if messages and len(messages) > 1:
+            handover_messages.extend(messages[1:])  # skip original system prompt
+        handover_messages.append({"role": "user", "content": handover_msg})
 
-            response = query_llm(handover_messages)
-            cleaned, updates = parse_memory_updates(response)
-            if updates:
-                apply_memory_updates(updates)
-                logger.info("Handover complete: %d memory files updated.", len(updates))
-            else:
-                logger.warning("Handover produced no memory updates. Response: %s", cleaned)
+        response = query_llm(handover_messages)
+        cleaned, updates = parse_memory_updates(response)
+        if updates:
+            apply_memory_updates(updates)
+            logger.info("Handover complete: %d memory files updated.", len(updates))
+        else:
+            logger.warning("Handover produced no memory updates. Response: %s", cleaned)
     except Exception as e:
         logger.warning("Handover failed: %s", e)
 
