@@ -1,0 +1,46 @@
+[package]
+name = "typist"
+version = "0.1.0"
+edition = "2021"
+description = "AI Professional Typer Agent — Voice-driven intelligent typing assistant"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Audio capture
+cpal = "0.15"
+
+# HTTP client for ASR and LLM APIs
+reqwest = { version = "0.12", features = ["multipart", "json"] }
+
+# Terminal UI
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Keyboard simulation and clipboard
+enigo = "0.2"
+arboard = "3"
+
+# WAV encoding (for sending audio to ASR API)
+hound = "3.5"
+
+# Configuration
+dotenvy = "0.15"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+
+# Date/time
+chrono = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async stream utilities (for crossterm EventStream)
+futures = "0.3"
