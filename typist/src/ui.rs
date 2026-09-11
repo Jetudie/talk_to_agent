@@ -35,6 +35,10 @@ pub struct App {
     pub should_quit: bool,
     /// Most recent conversation response from the LLM.
     pub conversation_response: Option<String>,
+    /// Active ASR backend info string.
+    pub asr_info: String,
+    /// Active LLM backend info string.
+    pub llm_info: String,
     /// Document scroll offset.
     pub doc_scroll: u16,
     /// Transcript scroll offset.
@@ -44,8 +48,8 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new App with the given document.
-    pub fn new(document: Document) -> Self {
+    /// Create a new App with the given document and backend labels.
+    pub fn new(document: Document, asr_info: String, llm_info: String) -> Self {
         Self {
             document,
             is_listening: true,
@@ -55,6 +59,8 @@ impl App {
             audio_level: 0.0,
             should_quit: false,
             conversation_response: None,
+            asr_info,
+            llm_info,
             doc_scroll: 0,
             log_scroll: 0,
             flash_message: None,
@@ -344,16 +350,18 @@ fn render_status_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     // Stats
     let stats = Paragraph::new(format!(
-        "Words: {}\nChars: {}\nParas: {}",
+        "W: {} | C: {} | P: {}\nASR: {}\nLLM: {}",
         app.document.word_count(),
         app.document.char_count(),
         app.document.paragraph_count(),
+        app.asr_info,
+        app.llm_info,
     ))
     .style(Style::default().fg(Color::Gray))
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Stats ")
+            .title(" Info ")
             .border_style(Style::default().fg(Color::DarkGray)),
     );
 

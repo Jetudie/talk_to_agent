@@ -1,4 +1,6 @@
 /target
 /output
+/models
+*.bin
 *.log
 .env

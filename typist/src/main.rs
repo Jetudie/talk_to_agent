@@ -42,11 +42,23 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     info!("Configuration loaded: {:?}", config);
 
+    // Create shared services
+    let transcriber = Arc::new(transcriber::Transcriber::new(&config).await?);
+    let llm_client = Arc::new(llm::LlmClient::new(&config));
+    let typer = typer::Typer::new(config.typing_speed_cps);
+
+    let asr_info = transcriber.backend_name();
+    let llm_info = if config.has_llm_api() {
+        config.llm_model.clone()
+    } else {
+        "Direct (Offline)".into()
+    };
+
     // Create the document
     let document = Document::new(config.output_format.clone());
 
     // Create the app state
-    let mut app = ui::App::new(document);
+    let mut app = ui::App::new(document, asr_info, llm_info);
 
     // Create event channel
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -54,11 +66,6 @@ async fn main() -> Result<()> {
     // Start audio capture
     let audio = audio::AudioCapture::start(&config, event_tx.clone())?;
     info!("Audio capture started (sample rate: {}Hz)", audio.sample_rate);
-
-    // Create shared services
-    let transcriber = Arc::new(transcriber::Transcriber::new(&config));
-    let llm_client = Arc::new(llm::LlmClient::new(&config));
-    let typer = typer::Typer::new(config.typing_speed_cps);
 
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -90,6 +97,7 @@ async fn main() -> Result<()> {
                     &event_tx,
                     &transcriber,
                     &llm_client,
+                    &config,
                 );
             }
 
@@ -149,6 +157,7 @@ fn handle_app_event(
     event_tx: &mpsc::UnboundedSender<AppEvent>,
     transcriber: &Arc<transcriber::Transcriber>,
     llm_client: &Arc<llm::LlmClient>,
+    config: &Config,
 ) {
     match event {
         AppEvent::AudioLevelUpdate(level) => {
@@ -196,6 +205,17 @@ fn handle_app_event(
 
             info!("Transcript: \"{}\"", text);
             app.add_transcript_entry(&text, "", "");
+
+            // If no LLM API is configured, use local rule-based intent parsing (dictation / simple commands)
+            if !config.has_llm_api() {
+                let action = parse_local_intent(&text);
+                info!("Local offline action: {:?}", action);
+                app.apply_action(action);
+                app.is_processing = false;
+                app.status = "🎤 Listening...".into();
+                return;
+            }
+
             app.status = "🧠 Classifying intent...".into();
 
             let tx = event_tx.clone();
@@ -396,4 +416,124 @@ fn handle_key_event(
     }
 
     KeyAction::Continue
+}
+
+/// Parse simple editing commands or dictation locally when no LLM API is configured.
+fn parse_local_intent(text: &str) -> LlmAction {
+    let lower = text.trim().to_lowercase();
+    let trimmed = lower.trim_matches(|c: char| {
+        c.is_ascii_punctuation() || c == '。' || c == '，' || c == '！' || c == '？' || c == '、'
+    });
+
+    match trimmed {
+        "new paragraph" | "new line" | "換行" | "换行" | "另起一段" | "下一段" => {
+            LlmAction::Command {
+                action: events::EditCommand::NewParagraph,
+                text: None,
+            }
+        }
+        "delete last sentence"
+        | "delete sentence"
+        | "刪除最後一句"
+        | "删除最后一句"
+        | "刪掉最後一句"
+        | "删掉最后一句" => LlmAction::Command {
+            action: events::EditCommand::DeleteLastSentence,
+            text: None,
+        },
+        "delete last paragraph"
+        | "delete paragraph"
+        | "刪除最後一段"
+        | "删除最后一段"
+        | "刪掉最後一段"
+        | "删掉最后一段" => LlmAction::Command {
+            action: events::EditCommand::DeleteLastParagraph,
+            text: None,
+        },
+        "undo" | "撤銷" | "撤销" | "復原" | "复原" => LlmAction::Command {
+            action: events::EditCommand::Undo,
+            text: None,
+        },
+        "redo" | "重做" => LlmAction::Command {
+            action: events::EditCommand::Redo,
+            text: None,
+        },
+        "clear all" | "clear document" | "清空" | "全部清空" | "清空文件" => {
+            LlmAction::Command {
+                action: events::EditCommand::ClearAll,
+                text: None,
+            }
+        }
+        _ => {
+            if let Some(rest) = trimmed
+                .strip_prefix("heading ")
+                .or_else(|| trimmed.strip_prefix("標題 "))
+                .or_else(|| trimmed.strip_prefix("标题 "))
+            {
+                LlmAction::Command {
+                    action: events::EditCommand::InsertHeading,
+                    text: Some(rest.trim().to_string()),
+                }
+            } else if let Some(rest) = trimmed
+                .strip_prefix("bullet ")
+                .or_else(|| trimmed.strip_prefix("項目 "))
+                .or_else(|| trimmed.strip_prefix("列表 "))
+            {
+                LlmAction::Command {
+                    action: events::EditCommand::InsertBullet,
+                    text: Some(rest.trim().to_string()),
+                }
+            } else {
+                LlmAction::Dictate {
+                    text: text.trim().to_string(),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_local_intent_commands() {
+        match parse_local_intent("new paragraph") {
+            LlmAction::Command { action, .. } => {
+                assert_eq!(action, events::EditCommand::NewParagraph);
+            }
+            _ => panic!("Expected NewParagraph"),
+        }
+
+        match parse_local_intent("換行。") {
+            LlmAction::Command { action, .. } => {
+                assert_eq!(action, events::EditCommand::NewParagraph);
+            }
+            _ => panic!("Expected NewParagraph"),
+        }
+
+        match parse_local_intent("undo") {
+            LlmAction::Command { action, .. } => {
+                assert_eq!(action, events::EditCommand::Undo);
+            }
+            _ => panic!("Expected Undo"),
+        }
+
+        match parse_local_intent("撤銷！") {
+            LlmAction::Command { action, .. } => {
+                assert_eq!(action, events::EditCommand::Undo);
+            }
+            _ => panic!("Expected Undo"),
+        }
+    }
+
+    #[test]
+    fn test_parse_local_intent_dictate() {
+        match parse_local_intent("Hello world, this is a test.") {
+            LlmAction::Dictate { text } => {
+                assert_eq!(text, "Hello world, this is a test.");
+            }
+            _ => panic!("Expected Dictate"),
+        }
+    }
 }

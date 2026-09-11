@@ -44,3 +44,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async stream utilities (for crossterm EventStream)
 futures = "0.3"
+
+# Local speech-to-text (Whisper)
+oxiwhisper = "0.1.2"

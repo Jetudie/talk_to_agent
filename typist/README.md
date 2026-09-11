@@ -19,13 +19,14 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
 - Plain text and Markdown output formats
 - Export via clipboard copy or keyboard simulation (type-out)
 - Save to .txt or .md files
+- **Zero API setup required**: Runs fully offline with built-in lightweight local Whisper model, with seamless fallback if no API is configured.
 
 ## Prerequisites
 
 - Rust toolchain (install via [rustup](https://rustup.rs/))
 - A working microphone
-- An ASR API endpoint (OpenAI Whisper-compatible)
-- An LLM API key (OpenAI or compatible)
+- *(Optional)* An ASR API endpoint (OpenAI Whisper-compatible) if not using local Whisper
+- *(Optional)* An LLM API key (OpenAI or compatible) for intent classification; if unset, typist runs in direct dictation mode with local voice commands
 
 ## Setup
 
@@ -35,16 +36,17 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
    cargo build --release
    ```
 
-2. **Configure**:
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` with your API keys and endpoints.
-
-3. **Run**:
+2. **Run immediately (Zero Config / Local Whisper)**:
    ```bash
    cargo run --release
    ```
+   If no `.env` or API keys are configured, typist will automatically run using local lightweight Whisper (`tiny`).
+
+3. **Optional Configuration**:
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env` if you wish to configure a remote ASR endpoint or an LLM for enhanced formatting.
 
 ## Configuration
 
@@ -52,11 +54,14 @@ Edit the `.env` file:
 
 | Variable | Description | Default |
 |---|---|---|
+| `ASR_BACKEND` | `local` (runs local Whisper) or `remote` (calls ASR API) | Auto (`local` if no API set) |
+| `WHISPER_MODEL` | Local Whisper model size (`tiny`, `base`, `small`) | `tiny` |
+| `LOCAL_WHISPER_MODEL_PATH` | Path to custom GGML model file | Auto-detected / downloaded |
 | `ASR_API_URL` | ASR API endpoint URL | `http://localhost:8080/v1/audio/transcriptions` |
 | `ASR_API_KEY` | ASR API key | (empty) |
-| `ASR_MODEL` | ASR model name | `whisper-1` |
+| `ASR_MODEL` | Remote ASR model name | `whisper-1` |
 | `ASR_LANGUAGE` | Language hint (`en`, `zh`, `auto`) | `auto` |
-| `LLM_API_KEY` | LLM API key | (required) |
+| `LLM_API_KEY` | LLM API key | (optional, empty = offline dictation) |
 | `LLM_BASE_URL` | LLM API base URL | `https://api.openai.com/v1` |
 | `LLM_MODEL` | LLM model name | `gpt-4o-mini` |
 | `SILENCE_THRESHOLD` | Speech detection sensitivity | `0.02` |
