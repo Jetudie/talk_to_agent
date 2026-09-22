@@ -7,7 +7,8 @@ mod transcriber;
 mod typer;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use audio::AudioSource;
 use config::Config;
 use crossterm::{
     event::{Event, KeyCode, KeyEvent, KeyModifiers},
@@ -17,7 +18,8 @@ use document::Document;
 use events::{AppEvent, LlmAction};
 use futures::StreamExt;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io;
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -42,6 +44,10 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     info!("Configuration loaded: {:?}", config);
 
+    // Select the audio source before entering raw terminal mode.
+    let audio_source = select_audio_source()?;
+    info!("Selected audio source: {:?}", audio_source);
+
     // Create shared services
     let transcriber = Arc::new(transcriber::Transcriber::new(&config).await?);
     let llm_client = Arc::new(llm::LlmClient::new(&config));
@@ -58,14 +64,29 @@ async fn main() -> Result<()> {
     let document = Document::new(config.output_format.clone());
 
     // Create the app state
-    let mut app = ui::App::new(document, asr_info, llm_info);
+    let mut app = ui::App::new(
+        document,
+        asr_info,
+        llm_info,
+        audio_source.display_name(),
+        audio_source.is_live(),
+    );
 
     // Create event channel
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    // Start audio capture
-    let audio = audio::AudioCapture::start(&config, event_tx.clone())?;
-    info!("Audio capture started (sample rate: {}Hz)", audio.sample_rate);
+    // Start live capture or decode the selected file.
+    let (audio_capture, audio_file) = match &audio_source {
+        AudioSource::Computer => {
+            let capture = audio::AudioCapture::start(&config, event_tx.clone())?;
+            info!(
+                "Audio capture started (sample rate: {}Hz)",
+                capture.sample_rate
+            );
+            (Some(capture), None)
+        }
+        AudioSource::File(path) => (None, Some(audio::load_audio_file(path)?)),
+    };
 
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -79,6 +100,15 @@ async fn main() -> Result<()> {
     let mut event_stream = crossterm::event::EventStream::new();
 
     info!("TUI initialized, entering main loop");
+
+    // File input is submitted once through the same pipeline used by live audio.
+    if let Some(file) = audio_file {
+        app.status = "⏳ Transcribing audio file...".into();
+        event_tx.send(AppEvent::SpeechSegmentReady {
+            samples: file.samples,
+            sample_rate: file.sample_rate,
+        })?;
+    }
 
     // Tick timer for periodic UI updates
     let mut tick_interval = tokio::time::interval(std::time::Duration::from_millis(100));
@@ -110,7 +140,7 @@ async fn main() -> Result<()> {
                             key,
                             &typer,
                             &config,
-                            &audio,
+                            audio_capture.as_ref(),
                             &mut terminal,
                         );
                         match action {
@@ -199,7 +229,7 @@ fn handle_app_event(
         AppEvent::TranscriptReady { text } => {
             if text.trim().is_empty() {
                 app.is_processing = false;
-                app.status = "🎤 Listening...".into();
+                app.status = app.ready_status();
                 return;
             }
 
@@ -212,7 +242,7 @@ fn handle_app_event(
                 info!("Local offline action: {:?}", action);
                 app.apply_action(action);
                 app.is_processing = false;
-                app.status = "🎤 Listening...".into();
+                app.status = app.ready_status();
                 return;
             }
 
@@ -232,9 +262,8 @@ fn handle_app_event(
                     Err(e) => {
                         error!("LLM classification failed: {}", e);
                         // Fall back to treating as dictation
-                        let _ = tx.send(AppEvent::LlmResponse(LlmAction::Dictate {
-                            text: raw_text,
-                        }));
+                        let _ =
+                            tx.send(AppEvent::LlmResponse(LlmAction::Dictate { text: raw_text }));
                     }
                 }
             });
@@ -248,7 +277,7 @@ fn handle_app_event(
             info!("LLM action: {:?}", action);
             app.apply_action(action);
             app.is_processing = false;
-            app.status = "🎤 Listening...".into();
+            app.status = app.ready_status();
         }
 
         AppEvent::StatusMessage(msg) => {
@@ -259,7 +288,7 @@ fn handle_app_event(
             warn!("Error: {}", msg);
             app.set_flash(format!("❌ {}", msg));
             app.is_processing = false;
-            app.status = "🎤 Listening...".into();
+            app.status = app.ready_status();
         }
     }
 }
@@ -276,14 +305,13 @@ fn handle_key_event(
     key: KeyEvent,
     typer: &typer::Typer,
     config: &Config,
-    audio: &audio::AudioCapture,
+    audio: Option<&audio::AudioCapture>,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> KeyAction {
     // Handle key combinations
     match (key.modifiers, key.code) {
         // Quit
-        (KeyModifiers::NONE, KeyCode::Char('q'))
-        | (KeyModifiers::NONE, KeyCode::Esc) => {
+        (KeyModifiers::NONE, KeyCode::Char('q')) | (KeyModifiers::NONE, KeyCode::Esc) => {
             return KeyAction::Quit;
         }
 
@@ -382,6 +410,10 @@ fn handle_key_event(
 
         // Toggle listening (Space)
         (KeyModifiers::NONE, KeyCode::Char(' ')) => {
+            let Some(audio) = audio else {
+                app.set_flash("Pause is only available for computer audio".into());
+                return KeyAction::Continue;
+            };
             let now_listening = audio.toggle_listening();
             app.is_listening = now_listening;
             if now_listening {
@@ -396,10 +428,7 @@ fn handle_key_event(
         // Toggle output format (Tab)
         (KeyModifiers::NONE, KeyCode::Tab) => {
             app.document.toggle_format();
-            app.set_flash(format!(
-                "📝 Format: {}",
-                app.document.format.display_name()
-            ));
+            app.set_flash(format!("📝 Format: {}", app.document.format.display_name()));
         }
 
         // Scroll document up
@@ -416,6 +445,70 @@ fn handle_key_event(
     }
 
     KeyAction::Continue
+}
+
+/// Select a live computer input or a WAV file. Command-line flags make this
+/// usable in scripts; without one, Typist presents a small startup menu.
+fn select_audio_source() -> Result<AudioSource> {
+    let mut args = std::env::args().skip(1);
+    if let Some(arg) = args.next() {
+        return match arg.as_str() {
+            "--computer-audio" | "--computer" => Ok(AudioSource::Computer),
+            "--audio-file" | "--file" => {
+                let path = args
+                    .next()
+                    .map(PathBuf::from)
+                    .context("--audio-file requires a path to a WAV file")?;
+                validate_audio_path(path)
+            }
+            "--help" | "-h" => {
+                println!("Usage: typist [--computer-audio | --audio-file <path.wav>]");
+                std::process::exit(0);
+            }
+            _ => anyhow::bail!(
+                "Unknown argument '{}'. Use --computer-audio or --audio-file <path.wav>.",
+                arg
+            ),
+        };
+    }
+
+    println!("Select audio source:");
+    println!("  1. Audio from this computer (default input device)");
+    println!("  2. Audio from a WAV file");
+    print!("Choice [1]: ");
+    io::stdout().flush()?;
+
+    let mut choice = String::new();
+    io::stdin().read_line(&mut choice)?;
+    match choice.trim() {
+        "" | "1" => Ok(AudioSource::Computer),
+        "2" => {
+            print!("WAV file path: ");
+            io::stdout().flush()?;
+            let mut path = String::new();
+            io::stdin().read_line(&mut path)?;
+            let path = path.trim().trim_matches('"');
+            if path.is_empty() {
+                anyhow::bail!("No audio file was selected");
+            }
+            validate_audio_path(PathBuf::from(path))
+        }
+        other => anyhow::bail!("Invalid audio source '{}'. Choose 1 or 2.", other),
+    }
+}
+
+fn validate_audio_path(path: PathBuf) -> Result<AudioSource> {
+    if !path.is_file() {
+        anyhow::bail!("Audio file does not exist: {}", path.display());
+    }
+    let is_wav = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"));
+    if !is_wav {
+        anyhow::bail!("Unsupported audio file. Typist currently accepts WAV files.");
+    }
+    Ok(AudioSource::File(path))
 }
 
 /// Parse simple editing commands or dictation locally when no LLM API is configured.

@@ -39,6 +39,10 @@ pub struct App {
     pub asr_info: String,
     /// Active LLM backend info string.
     pub llm_info: String,
+    /// Selected audio source label.
+    pub audio_source_info: String,
+    /// Whether this source continuously listens for new audio.
+    pub continuous_audio: bool,
     /// Document scroll offset.
     pub doc_scroll: u16,
     /// Transcript scroll offset.
@@ -49,31 +53,46 @@ pub struct App {
 
 impl App {
     /// Create a new App with the given document and backend labels.
-    pub fn new(document: Document, asr_info: String, llm_info: String) -> Self {
+    pub fn new(
+        document: Document,
+        asr_info: String,
+        llm_info: String,
+        audio_source_info: String,
+        continuous_audio: bool,
+    ) -> Self {
         Self {
             document,
-            is_listening: true,
+            is_listening: continuous_audio,
             is_processing: false,
-            status: "Ready — Listening...".into(),
+            status: if continuous_audio {
+                "Ready — Listening...".into()
+            } else {
+                "Ready — Loading audio file...".into()
+            },
             transcript_log: Vec::new(),
             audio_level: 0.0,
             should_quit: false,
             conversation_response: None,
             asr_info,
             llm_info,
+            audio_source_info,
+            continuous_audio,
             doc_scroll: 0,
             log_scroll: 0,
             flash_message: None,
         }
     }
 
+    pub fn ready_status(&self) -> String {
+        if self.continuous_audio {
+            "🎤 Listening...".into()
+        } else {
+            "✅ Audio file processed".into()
+        }
+    }
+
     /// Add a transcript entry to the log.
-    pub fn add_transcript_entry(
-        &mut self,
-        raw_text: &str,
-        intent: &str,
-        detail: &str,
-    ) {
+    pub fn add_transcript_entry(&mut self, raw_text: &str, intent: &str, detail: &str) {
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
         self.transcript_log.push(TranscriptEntry {
             timestamp,
@@ -147,9 +166,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(8),      // Document area
-            Constraint::Length(12),   // Bottom panel (transcript + status)
-            Constraint::Length(3),    // Help bar
+            Constraint::Min(8),     // Document area
+            Constraint::Length(12), // Bottom panel (transcript + status)
+            Constraint::Length(3),  // Help bar
         ])
         .split(size);
 
@@ -194,7 +213,11 @@ fn render_document(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .wrap(Wrap { trim: false })
@@ -272,7 +295,11 @@ fn render_transcript_log(frame: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title(" 📝 Transcript Log ")
-            .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )
             .border_style(Style::default().fg(Color::Magenta)),
     );
 
@@ -286,7 +313,7 @@ fn render_status_panel(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(3), // Status line
             Constraint::Length(3), // Audio level
-            Constraint::Min(2),   // Stats
+            Constraint::Min(2),    // Stats
         ])
         .split(area);
 
@@ -350,10 +377,11 @@ fn render_status_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     // Stats
     let stats = Paragraph::new(format!(
-        "W: {} | C: {} | P: {}\nASR: {}\nLLM: {}",
+        "W: {} | C: {} | P: {}\nSource: {}\nASR: {} | LLM: {}",
         app.document.word_count(),
         app.document.char_count(),
         app.document.paragraph_count(),
+        app.audio_source_info,
         app.asr_info,
         app.llm_info,
     ))
@@ -371,21 +399,68 @@ fn render_status_panel(frame: &mut Frame, app: &App, area: Rect) {
 /// Render the help bar at the bottom.
 fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     let help_spans = vec![
-        Span::styled(" Space", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(": Pause  ", Style::default().fg(Color::Gray)),
-        Span::styled("Ctrl+S", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Space",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if app.continuous_audio {
+                ": Pause  "
+            } else {
+                ": N/A  "
+            },
+            Style::default().fg(Color::Gray),
+        ),
+        Span::styled(
+            "Ctrl+S",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": Save  ", Style::default().fg(Color::Gray)),
-        Span::styled("Ctrl+Y", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Ctrl+Y",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": Copy  ", Style::default().fg(Color::Gray)),
-        Span::styled("Ctrl+E", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Ctrl+E",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": Type-out  ", Style::default().fg(Color::Gray)),
-        Span::styled("Ctrl+Z", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Ctrl+Z",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": Undo  ", Style::default().fg(Color::Gray)),
-        Span::styled("Ctrl+R", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Ctrl+R",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": Redo  ", Style::default().fg(Color::Gray)),
-        Span::styled("Tab", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Tab",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": Format  ", Style::default().fg(Color::Gray)),
-        Span::styled("q/Esc", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "q/Esc",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": Quit", Style::default().fg(Color::Gray)),
     ];
 

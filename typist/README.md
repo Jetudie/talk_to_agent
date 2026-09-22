@@ -10,7 +10,9 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
 
 ## Features
 
-- Real-time microphone capture with Voice Activity Detection (VAD)
+- Startup audio-source selection: live computer input or an audio file
+- Real-time computer input capture with Voice Activity Detection (VAD)
+- WAV file transcription (PCM or IEEE-float, mono or multichannel)
 - Configurable ASR (Speech-to-Text) API endpoint
 - LLM-powered intent classification (dictation vs command vs conversation)
 - English and Mandarin (中文) support
@@ -24,7 +26,7 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
 ## Prerequisites
 
 - Rust toolchain (install via [rustup](https://rustup.rs/))
-- A working microphone
+- A working microphone for live computer input, or a WAV audio file
 - *(Optional)* An ASR API endpoint (OpenAI Whisper-compatible) if not using local Whisper
 - *(Optional)* An LLM API key (OpenAI or compatible) for intent classification; if unset, typist runs in direct dictation mode with local voice commands
 
@@ -41,6 +43,12 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
    cargo run --release
    ```
    If no `.env` or API keys are configured, typist will automatically run using local lightweight Whisper (`tiny`).
+
+   Typist asks you to choose an audio source at startup. You can also skip the prompt:
+   ```bash
+   typist --computer-audio
+   typist --audio-file recording.wav
+   ```
 
 3. **Optional Configuration**:
    ```bash
@@ -85,7 +93,7 @@ Edit the `.env` file:
 
 ## How It Works
 
-1. **Audio Capture**: `cpal` streams microphone input in real-time
+1. **Audio Input**: choose the computer's default input device or a WAV file
 2. **VAD**: Detects when you start and stop speaking using RMS energy
 3. **Transcription**: Sends the speech segment to your ASR API
 4. **Intent Classification**: LLM analyzes the transcript and classifies it:

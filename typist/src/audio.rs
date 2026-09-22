@@ -2,10 +2,92 @@ use crate::config::Config;
 use crate::events::AppEvent;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use hound::{SampleFormat, WavReader};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+/// The source from which Typist receives audio.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioSource {
+    /// Live audio from the computer's default input device.
+    Computer,
+    /// A WAV file selected by the user.
+    File(PathBuf),
+}
+
+impl AudioSource {
+    pub fn display_name(&self) -> String {
+        match self {
+            Self::Computer => "Computer input".into(),
+            Self::File(path) => format!(
+                "File: {}",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("audio.wav")
+            ),
+        }
+    }
+
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Computer)
+    }
+}
+
+/// Decoded mono audio loaded from a WAV file.
+pub struct AudioFile {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
+/// Load a PCM or IEEE-float WAV file and downmix it to mono.
+pub fn load_audio_file(path: &Path) -> Result<AudioFile> {
+    let mut reader = WavReader::open(path)
+        .with_context(|| format!("Failed to open audio file: {}", path.display()))?;
+    let spec = reader.spec();
+    let channels = spec.channels as usize;
+    if channels == 0 || spec.sample_rate == 0 {
+        anyhow::bail!("Audio file has an invalid WAV format: {}", path.display());
+    }
+
+    let interleaved = match spec.sample_format {
+        SampleFormat::Float => reader
+            .samples::<f32>()
+            .map(|sample| sample.context("Failed to decode float WAV sample"))
+            .collect::<Result<Vec<_>>>()?,
+        SampleFormat::Int => {
+            let scale = 2_f32.powi(spec.bits_per_sample.saturating_sub(1) as i32);
+            reader
+                .samples::<i32>()
+                .map(|sample| {
+                    sample
+                        .map(|value| (value as f32 / scale).clamp(-1.0, 1.0))
+                        .context("Failed to decode PCM WAV sample")
+                })
+                .collect::<Result<Vec<_>>>()?
+        }
+    };
+
+    let samples = to_mono_f32(&interleaved, channels);
+    if samples.is_empty() {
+        anyhow::bail!("Audio file contains no samples: {}", path.display());
+    }
+
+    info!(
+        "Loaded audio file {}: {}Hz, {} channel(s), {:.1}s",
+        path.display(),
+        spec.sample_rate,
+        channels,
+        samples.len() as f32 / spec.sample_rate as f32
+    );
+
+    Ok(AudioFile {
+        samples,
+        sample_rate: spec.sample_rate,
+    })
+}
 
 /// Audio capture system using cpal with integrated Voice Activity Detection (VAD).
 ///
@@ -167,6 +249,44 @@ fn to_mono_f32(data: &[f32], channels: usize) -> Vec<f32> {
     data.chunks(channels)
         .map(|frame| frame.iter().sum::<f32>() / channels as f32)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hound::{WavSpec, WavWriter};
+
+    #[test]
+    fn loads_and_downmixes_stereo_wav() {
+        let path = std::env::temp_dir().join(format!(
+            "typist-audio-test-{}-{}.wav",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(&path, spec).unwrap();
+        writer.write_sample(16_384_i16).unwrap();
+        writer.write_sample(-16_384_i16).unwrap();
+        writer.write_sample(8_192_i16).unwrap();
+        writer.write_sample(8_192_i16).unwrap();
+        writer.finalize().unwrap();
+
+        let audio = load_audio_file(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(audio.sample_rate, 16_000);
+        assert_eq!(audio.samples.len(), 2);
+        assert!(audio.samples[0].abs() < 0.0001);
+        assert!((audio.samples[1] - 0.25).abs() < 0.0001);
+    }
 }
 
 /// Compute the Root Mean Square (RMS) energy of an audio buffer.
