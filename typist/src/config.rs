@@ -24,6 +24,29 @@ impl OutputFormat {
     }
 }
 
+/// Which transcription result is added to the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSource {
+    Asr,
+    Llm,
+}
+
+impl OutputSource {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Asr => "Raw ASR",
+            Self::Llm => "LLM processed",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Asr => Self::Llm,
+            Self::Llm => Self::Asr,
+        }
+    }
+}
+
 /// Speech-to-Text backend choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsrBackend {
@@ -69,6 +92,8 @@ pub struct Config {
 
     // Output settings
     pub output_format: OutputFormat,
+    pub output_source: OutputSource,
+    pub output_file: Option<PathBuf>,
     pub typing_speed_cps: u32,
     pub save_directory: PathBuf,
 }
@@ -96,6 +121,20 @@ impl Config {
             PathBuf::from(std::env::var("SAVE_DIRECTORY").unwrap_or_else(|_| "./output".into()));
         std::fs::create_dir_all(&save_directory)
             .with_context(|| format!("Failed to create save directory: {:?}", save_directory))?;
+
+        let output_source = match std::env::var("OUTPUT_SOURCE")
+            .unwrap_or_else(|_| "llm".into())
+            .to_lowercase()
+            .as_str()
+        {
+            "asr" | "raw" => OutputSource::Asr,
+            "llm" | "processed" => OutputSource::Llm,
+            value => anyhow::bail!("Invalid OUTPUT_SOURCE '{value}'; use 'asr' or 'llm'"),
+        };
+        let output_file = std::env::var("OUTPUT_FILE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
 
         // Determine ASR Backend
         let asr_api_key = std::env::var("ASR_API_KEY").unwrap_or_default();
@@ -166,6 +205,8 @@ impl Config {
 
             // Output
             output_format,
+            output_source,
+            output_file,
             typing_speed_cps: std::env::var("TYPING_SPEED")
                 .unwrap_or_else(|_| "0".into())
                 .parse()

@@ -21,6 +21,8 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
 - Plain text and Markdown output formats
 - Export via clipboard copy or keyboard simulation (type-out)
 - Save to .txt or .md files
+- Switch between original ASR text and LLM processed output while running
+- Automatically update a chosen output file as the document changes
 - **Zero API setup required**: Runs fully offline with built-in lightweight local Whisper model, with seamless fallback if no API is configured.
 
 ## Prerequisites
@@ -48,6 +50,7 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
    ```bash
    typist --computer-audio
    typist --audio-file recording.wav
+   typist --audio-file recording.wav --output-file ./output/transcript.txt
    ```
 
 3. **Optional Configuration**:
@@ -75,6 +78,8 @@ Edit the `.env` file:
 | `SILENCE_THRESHOLD` | Speech detection sensitivity | `0.02` |
 | `SILENCE_DURATION` | Seconds of silence to end recording | `1.5` |
 | `OUTPUT_FORMAT` | Default format: `plain` or `markdown` | `markdown` |
+| `OUTPUT_SOURCE` | `llm` for processed text and editing commands, or `asr` for the original ASR transcript | `llm` |
+| `OUTPUT_FILE` | Optional file updated automatically after each document change; `--output-file <path>` overrides it | (unset) |
 | `SAVE_DIRECTORY` | Directory for saved documents | `./output` |
 
 ## Keyboard Shortcuts
@@ -88,8 +93,11 @@ Edit the `.env` file:
 | `Ctrl+Z` | Undo last change |
 | `Ctrl+R` | Redo last undone change |
 | `Tab` | Toggle plain text / Markdown format |
+| `m` | Switch future utterances between raw ASR and LLM processed output |
 | `↑/↓` | Scroll document |
 | `q` / `Esc` | Quit |
+
+When output is set to raw ASR, typist appends each transcript directly to the document and skips LLM classification and voice editing commands. The output file contains the current document, including edits and undo/redo, and is created when the document first changes. Ctrl+S still saves a separate timestamped copy.
 
 ## How It Works
 

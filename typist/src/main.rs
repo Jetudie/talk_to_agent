@@ -9,7 +9,7 @@ mod ui;
 
 use anyhow::{Context, Result};
 use audio::AudioSource;
-use config::Config;
+use config::{Config, OutputSource};
 use crossterm::{
     event::{Event, KeyCode, KeyEvent, KeyModifiers},
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
@@ -41,11 +41,14 @@ async fn main() -> Result<()> {
     info!("=== Typist Agent starting ===");
 
     // Load configuration
-    let config = Config::from_env()?;
+    let mut config = Config::from_env()?;
     info!("Configuration loaded: {:?}", config);
 
     // Select the audio source before entering raw terminal mode.
-    let audio_source = select_audio_source()?;
+    let (audio_source, output_file_override) = select_audio_source()?;
+    if let Some(path) = output_file_override {
+        config.output_file = Some(path);
+    }
     info!("Selected audio source: {:?}", audio_source);
 
     // Create shared services
@@ -66,6 +69,7 @@ async fn main() -> Result<()> {
     // Create the app state
     let mut app = ui::App::new(
         document,
+        config.output_source,
         asr_info,
         llm_info,
         audio_source.display_name(),
@@ -236,6 +240,14 @@ fn handle_app_event(
             info!("Transcript: \"{}\"", text);
             app.add_transcript_entry(&text, "", "");
 
+            if app.output_source == OutputSource::Asr {
+                app.apply_action(LlmAction::Dictate { text });
+                app.is_processing = false;
+                app.status = app.ready_status();
+                save_output_file(app, config);
+                return;
+            }
+
             // If no LLM API is configured, use local rule-based intent parsing (dictation / simple commands)
             if !config.has_llm_api() {
                 let action = parse_local_intent(&text);
@@ -243,6 +255,7 @@ fn handle_app_event(
                 app.apply_action(action);
                 app.is_processing = false;
                 app.status = app.ready_status();
+                save_output_file(app, config);
                 return;
             }
 
@@ -275,9 +288,13 @@ fn handle_app_event(
 
         AppEvent::LlmResponse(action) => {
             info!("LLM action: {:?}", action);
+            let previous = app.document.render();
             app.apply_action(action);
             app.is_processing = false;
             app.status = app.ready_status();
+            if app.document.render() != previous {
+                save_output_file(app, config);
+            }
         }
 
         AppEvent::StatusMessage(msg) => {
@@ -290,6 +307,27 @@ fn handle_app_event(
             app.is_processing = false;
             app.status = app.ready_status();
         }
+    }
+}
+
+/// Keep the configured output file current after document edits.
+fn save_output_file(app: &mut ui::App, config: &Config) {
+    let Some(path) = &config.output_file else {
+        return;
+    };
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            app.set_flash(format!("❌ Output file error: {e}"));
+            error!("Failed to create output directory {:?}: {}", parent, e);
+            return;
+        }
+    }
+    if let Err(e) = app.document.save(path) {
+        app.set_flash(format!("❌ Output file error: {e}"));
+        error!("Failed to save output file {:?}: {}", path, e);
     }
 }
 
@@ -394,6 +432,7 @@ fn handle_key_event(
         (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
             if app.document.undo() {
                 app.set_flash("↩️ Undo".into());
+                save_output_file(app, config);
             } else {
                 app.set_flash("Nothing to undo".into());
             }
@@ -403,6 +442,7 @@ fn handle_key_event(
         (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
             if app.document.redo() {
                 app.set_flash("↪️ Redo".into());
+                save_output_file(app, config);
             } else {
                 app.set_flash("Nothing to redo".into());
             }
@@ -431,6 +471,12 @@ fn handle_key_event(
             app.set_flash(format!("📝 Format: {}", app.document.format.display_name()));
         }
 
+        // Switch the result used for future utterances.
+        (KeyModifiers::NONE, KeyCode::Char('m')) => {
+            app.output_source = app.output_source.toggle();
+            app.set_flash(format!("Output: {}", app.output_source.display_name()));
+        }
+
         // Scroll document up
         (KeyModifiers::NONE, KeyCode::Up) => {
             app.doc_scroll = app.doc_scroll.saturating_sub(1);
@@ -449,27 +495,37 @@ fn handle_key_event(
 
 /// Select a live computer input or a WAV file. Command-line flags make this
 /// usable in scripts; without one, Typist presents a small startup menu.
-fn select_audio_source() -> Result<AudioSource> {
+fn select_audio_source() -> Result<(AudioSource, Option<PathBuf>)> {
     let mut args = std::env::args().skip(1);
-    if let Some(arg) = args.next() {
-        return match arg.as_str() {
-            "--computer-audio" | "--computer" => Ok(AudioSource::Computer),
+    let mut source = None;
+    let mut output_file = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--computer-audio" | "--computer" => source = Some(AudioSource::Computer),
             "--audio-file" | "--file" => {
                 let path = args
                     .next()
                     .map(PathBuf::from)
                     .context("--audio-file requires a path to a WAV file")?;
-                validate_audio_path(path)
+                source = Some(validate_audio_path(path)?);
+            }
+            "--output-file" => {
+                output_file = Some(PathBuf::from(
+                    args.next().context("--output-file requires a path")?,
+                ));
             }
             "--help" | "-h" => {
-                println!("Usage: typist [--computer-audio | --audio-file <path.wav>]");
+                println!("Usage: typist [--computer-audio | --audio-file <path.wav>] [--output-file <path>]");
                 std::process::exit(0);
             }
             _ => anyhow::bail!(
-                "Unknown argument '{}'. Use --computer-audio or --audio-file <path.wav>.",
+                "Unknown argument '{}'. Use --help for available options.",
                 arg
             ),
-        };
+        }
+    }
+    if let Some(source) = source {
+        return Ok((source, output_file));
     }
 
     println!("Select audio source:");
@@ -481,7 +537,7 @@ fn select_audio_source() -> Result<AudioSource> {
     let mut choice = String::new();
     io::stdin().read_line(&mut choice)?;
     match choice.trim() {
-        "" | "1" => Ok(AudioSource::Computer),
+        "" | "1" => Ok((AudioSource::Computer, output_file)),
         "2" => {
             print!("WAV file path: ");
             io::stdout().flush()?;
@@ -491,7 +547,7 @@ fn select_audio_source() -> Result<AudioSource> {
             if path.is_empty() {
                 anyhow::bail!("No audio file was selected");
             }
-            validate_audio_path(PathBuf::from(path))
+            Ok((validate_audio_path(PathBuf::from(path))?, output_file))
         }
         other => anyhow::bail!("Invalid audio source '{}'. Choose 1 or 2.", other),
     }

@@ -1,3 +1,4 @@
+use crate::config::OutputSource;
 use crate::document::Document;
 use crate::events::LlmAction;
 use ratatui::{
@@ -21,6 +22,7 @@ pub struct TranscriptEntry {
 pub struct App {
     /// The document being typed.
     pub document: Document,
+    pub output_source: OutputSource,
     /// Whether the agent is currently listening for speech.
     pub is_listening: bool,
     /// Whether the agent is currently processing (transcribing/classifying).
@@ -55,6 +57,7 @@ impl App {
     /// Create a new App with the given document and backend labels.
     pub fn new(
         document: Document,
+        output_source: OutputSource,
         asr_info: String,
         llm_info: String,
         audio_source_info: String,
@@ -62,6 +65,7 @@ impl App {
     ) -> Self {
         Self {
             document,
+            output_source,
             is_listening: continuous_audio,
             is_processing: false,
             status: if continuous_audio {
@@ -377,11 +381,12 @@ fn render_status_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     // Stats
     let stats = Paragraph::new(format!(
-        "W: {} | C: {} | P: {}\nSource: {}\nASR: {} | LLM: {}",
+        "W: {} | C: {} | P: {}\nAudio: {} | Output: {}\nASR: {} | LLM: {}",
         app.document.word_count(),
         app.document.char_count(),
         app.document.paragraph_count(),
         app.audio_source_info,
+        app.output_source.display_name(),
         app.asr_info,
         app.llm_info,
     ))
@@ -455,6 +460,13 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(": Format  ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            "m",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(": Raw/LLM  ", Style::default().fg(Color::Gray)),
         Span::styled(
             "q/Esc",
             Style::default()
