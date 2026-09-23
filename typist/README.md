@@ -10,9 +10,10 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
 
 ## Features
 
-- Startup audio-source selection: live computer input or an audio file
-- Real-time computer input capture with Voice Activity Detection (VAD)
-- WAV file transcription (PCM or IEEE-float, mono or multichannel)
+- Three audio sources: WAV or MP3 file, microphone, or system audio (what you hear)
+- Change the audio source during runtime with `a`
+- Real-time microphone and Windows system audio capture with Voice Activity Detection (VAD)
+- WAV file transcription (PCM or IEEE-float, mono or multichannel) and MP3 file transcription
 - Configurable ASR (Speech-to-Text) API endpoint
 - LLM-powered intent classification (dictation vs command vs conversation)
 - English and Mandarin (中文) support
@@ -28,7 +29,7 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
 ## Prerequisites
 
 - Rust toolchain (install via [rustup](https://rustup.rs/))
-- A working microphone for live computer input, or a WAV audio file
+- A microphone, a WAV or MP3 file, or a Windows playback device for system audio capture
 - *(Optional)* An ASR API endpoint (OpenAI Whisper-compatible) if not using local Whisper
 - *(Optional)* An LLM API key (OpenAI or compatible) for intent classification; if unset, typist runs in direct dictation mode with local voice commands
 
@@ -46,12 +47,16 @@ The agent uses an LLM to understand your intent and produces clean, well-formatt
    ```
    If no `.env` or API keys are configured, typist will automatically run using local lightweight Whisper (`tiny`).
 
-   Typist asks you to choose an audio source at startup. You can also skip the prompt:
+   Typist asks you to choose a file, microphone, or system audio at startup. You can also skip the prompt:
    ```bash
-   typist --computer-audio
-   typist --audio-file recording.wav
-   typist --audio-file recording.wav --output-file ./output/transcript.txt
+   typist --microphone
+   typist --system-audio
+   typist --audio-file recording.mp3
+   typist --audio-file recording.mp3 --output-file ./output/transcript.txt
    ```
+   Press `a` in the running interface to switch sources. File input is processed once;
+   microphone and system audio listen continuously. System audio uses Windows loopback
+   capture of the default playback device.
 
 3. **Optional Configuration**:
    ```bash
@@ -87,6 +92,7 @@ Edit the `.env` file:
 | Key | Action |
 |---|---|
 | `Space` | Pause/resume listening |
+| `a` | Change audio source |
 | `Ctrl+S` | Save document to file |
 | `Ctrl+Y` | Copy document to clipboard |
 | `Ctrl+E` | Type-out (paste into focused window) |
@@ -101,9 +107,9 @@ When output is set to raw ASR, typist appends each transcript directly to the do
 
 ## How It Works
 
-1. **Audio Input**: choose the computer's default input device or a WAV file
-2. **VAD**: Detects when you start and stop speaking using RMS energy
-3. **Transcription**: Sends the speech segment to your ASR API
+1. **Audio Input**: choose a WAV/MP3 file, microphone, or Windows system audio
+2. **VAD**: Detects speech boundaries in live microphone or system audio
+3. **Transcription**: Sends audio to local Whisper or the configured ASR API
 4. **Intent Classification**: LLM analyzes the transcript and classifies it:
    - *Dictate*: Cleans up filler words, fixes grammar, formats as written text
    - *Command*: Extracts editing action (new paragraph, delete, undo, etc.)
@@ -132,8 +138,9 @@ When output is set to raw ASR, typist appends each transcript directly to the do
 ## Architecture
 
 ```
-Microphone → cpal → VAD → ASR API → LLM Intent Classifier
-                                          ↓
+File (WAV/MP3) ────────────────┐
+Microphone → cpal → VAD ───────┼→ ASR → LLM Intent Classifier
+System audio → loopback → VAD ─┘                  ↓
                               ┌───────────┼───────────┐
                               ↓           ↓           ↓
                           Dictate     Command    Conversation

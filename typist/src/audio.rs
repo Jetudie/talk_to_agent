@@ -3,6 +3,8 @@ use crate::events::AppEvent;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavReader};
+use minimp3::{Decoder, Error as Mp3Error};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,38 +14,86 @@ use tracing::{debug, error, info, warn};
 /// The source from which Typist receives audio.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioSource {
-    /// Live audio from the computer's default input device.
-    Computer,
-    /// A WAV file selected by the user.
+    Microphone,
+    /// Loopback capture of the default speaker output on Windows.
+    SystemAudio,
     File(PathBuf),
 }
 
 impl AudioSource {
     pub fn display_name(&self) -> String {
         match self {
-            Self::Computer => "Computer input".into(),
+            Self::Microphone => "Microphone".into(),
+            Self::SystemAudio => "System audio".into(),
             Self::File(path) => format!(
                 "File: {}",
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or("audio.wav")
+                    .unwrap_or("audio file")
             ),
         }
     }
 
     pub fn is_live(&self) -> bool {
-        matches!(self, Self::Computer)
+        !matches!(self, Self::File(_))
     }
 }
 
-/// Decoded mono audio loaded from a WAV file.
+/// Decoded mono audio loaded from a WAV or MP3 file.
 pub struct AudioFile {
     pub samples: Vec<f32>,
     pub sample_rate: u32,
 }
 
-/// Load a PCM or IEEE-float WAV file and downmix it to mono.
+/// Load a WAV or MP3 file and downmix it to mono.
 pub fn load_audio_file(path: &Path) -> Result<AudioFile> {
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
+    {
+        return load_mp3(path);
+    }
+    load_wav(path)
+}
+
+fn load_mp3(path: &Path) -> Result<AudioFile> {
+    let file = File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+    let mut decoder = Decoder::new(file);
+    let mut samples = Vec::new();
+    let mut sample_rate = None;
+    loop {
+        let frame = match decoder.next_frame() {
+            Ok(frame) => frame,
+            Err(Mp3Error::Eof) => break,
+            Err(e) => return Err(e).context("Failed to decode MP3 audio"),
+        };
+        let rate = frame.sample_rate as u32;
+        if sample_rate.is_some_and(|previous| previous != rate) {
+            anyhow::bail!("MP3 sample rate changes within {}", path.display());
+        }
+        sample_rate = Some(rate);
+        let pcm: Vec<f32> = frame
+            .data
+            .iter()
+            .map(|&sample| sample as f32 / 32768.0)
+            .collect();
+        samples.extend(to_mono_f32(&pcm, frame.channels));
+    }
+    let sample_rate = sample_rate.context("MP3 file contains no decodable audio")?;
+    info!(
+        "Loaded MP3 file {}: {}Hz, {:.1}s",
+        path.display(),
+        sample_rate,
+        samples.len() as f32 / sample_rate as f32
+    );
+    Ok(AudioFile {
+        samples,
+        sample_rate,
+    })
+}
+
+fn load_wav(path: &Path) -> Result<AudioFile> {
     let mut reader = WavReader::open(path)
         .with_context(|| format!("Failed to open audio file: {}", path.display()))?;
     let spec = reader.spec();
@@ -89,15 +139,16 @@ pub fn load_audio_file(path: &Path) -> Result<AudioFile> {
     })
 }
 
-/// Audio capture system using cpal with integrated Voice Activity Detection (VAD).
+/// Live audio capture using cpal with integrated Voice Activity Detection (VAD).
 ///
-/// Captures microphone input, detects speech boundaries using RMS-based VAD,
+/// Captures microphone or system output, detects speech boundaries using RMS-based VAD,
 /// and sends complete speech segments to the processing pipeline.
 pub struct AudioCapture {
     /// The cpal stream — kept alive to maintain audio capture.
     _stream: cpal::Stream,
     /// Flag to pause/resume listening.
     is_listening: Arc<AtomicBool>,
+    is_active: Arc<AtomicBool>,
     /// The sample rate the audio was captured at.
     pub sample_rate: u32,
 }
@@ -105,20 +156,44 @@ pub struct AudioCapture {
 impl AudioCapture {
     /// Create and start a new audio capture instance.
     ///
-    /// Opens the default input device, starts streaming audio,
+    /// Opens the requested input or playback device, starts streaming audio,
     /// and spawns a VAD processor task that detects speech segments.
-    pub fn start(config: &Config, event_tx: mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
+    pub fn start(
+        source: &AudioSource,
+        config: &Config,
+        event_tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .context("No audio input device found. Please check your microphone.")?;
+        let device = match source {
+            AudioSource::Microphone => {
+                host.default_input_device().context("No microphone found")?
+            }
+            AudioSource::SystemAudio => {
+                #[cfg(target_os = "windows")]
+                {
+                    host.default_output_device()
+                        .context("No speaker output found")?
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    anyhow::bail!("System audio capture is currently supported on Windows");
+                }
+            }
+            AudioSource::File(_) => anyhow::bail!("File is not a live audio source"),
+        };
 
         let device_name = device.name().unwrap_or_else(|_| "Unknown".into());
         info!("Using audio input device: {}", device_name);
 
-        let supported_config = device
-            .default_input_config()
-            .context("Failed to get default input config")?;
+        let supported_config = if matches!(source, AudioSource::SystemAudio) {
+            device
+                .default_output_config()
+                .context("Failed to get speaker output config")?
+        } else {
+            device
+                .default_input_config()
+                .context("Failed to get microphone input config")?
+        };
 
         let sample_rate = supported_config.sample_rate().0;
         let channels = supported_config.channels() as usize;
@@ -130,6 +205,7 @@ impl AudioCapture {
         );
 
         let is_listening = Arc::new(AtomicBool::new(true));
+        let is_active = Arc::new(AtomicBool::new(true));
         let is_listening_clone = is_listening.clone();
 
         // Channel to send audio chunks from cpal callback to VAD processor.
@@ -212,11 +288,18 @@ impl AudioCapture {
             min_speech_samples: (0.1 * sample_rate as f32) as usize, // min 100ms of speech
         };
 
-        tokio::spawn(vad_processor(chunk_rx, event_tx, vad_config, sample_rate));
+        tokio::spawn(vad_processor(
+            chunk_rx,
+            event_tx,
+            vad_config,
+            sample_rate,
+            is_active.clone(),
+        ));
 
         Ok(Self {
             _stream: stream,
             is_listening,
+            is_active,
             sample_rate,
         })
     }
@@ -238,6 +321,12 @@ impl AudioCapture {
             info!("Audio capture paused");
         }
         now_listening
+    }
+}
+
+impl Drop for AudioCapture {
+    fn drop(&mut self) {
+        self.is_active.store(false, Ordering::Relaxed);
     }
 }
 
@@ -319,6 +408,7 @@ async fn vad_processor(
     event_tx: mpsc::UnboundedSender<AppEvent>,
     config: VadConfig,
     sample_rate: u32,
+    is_active: Arc<AtomicBool>,
 ) {
     let mut speech_buffer: Vec<f32> = Vec::with_capacity(sample_rate as usize * 5);
     let mut is_speaking = false;
@@ -328,6 +418,9 @@ async fn vad_processor(
     debug!("VAD processor started");
 
     while let Some(chunk) = chunk_rx.recv().await {
+        if !is_active.load(Ordering::Relaxed) {
+            break;
+        }
         let rms = compute_rms(&chunk);
 
         // Send audio level for VU meter (throttle to avoid flooding)

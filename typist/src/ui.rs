@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -16,6 +16,11 @@ pub struct TranscriptEntry {
     pub raw_text: String,
     pub intent: String,
     pub detail: String,
+}
+
+pub enum SourcePrompt {
+    Choice,
+    FilePath(String),
 }
 
 /// The main application state.
@@ -45,6 +50,7 @@ pub struct App {
     pub audio_source_info: String,
     /// Whether this source continuously listens for new audio.
     pub continuous_audio: bool,
+    pub source_prompt: Option<SourcePrompt>,
     /// Document scroll offset.
     pub doc_scroll: u16,
     /// Transcript scroll offset.
@@ -81,6 +87,7 @@ impl App {
             llm_info,
             audio_source_info,
             continuous_audio,
+            source_prompt: None,
             doc_scroll: 0,
             log_scroll: 0,
             flash_message: None,
@@ -89,7 +96,11 @@ impl App {
 
     pub fn ready_status(&self) -> String {
         if self.continuous_audio {
-            "🎤 Listening...".into()
+            if self.audio_source_info == "System audio" {
+                "🔊 Capturing system audio...".into()
+            } else {
+                "🎤 Listening...".into()
+            }
         } else {
             "✅ Audio file processed".into()
         }
@@ -179,6 +190,27 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_document(frame, app, main_chunks[0]);
     render_bottom_panel(frame, app, main_chunks[1]);
     render_help_bar(frame, app, main_chunks[2]);
+    if let Some(prompt) = &app.source_prompt {
+        let popup = Rect {
+            x: size.x + size.width.saturating_sub(62) / 2,
+            y: size.y + size.height.saturating_sub(7) / 2,
+            width: size.width.min(62),
+            height: size.height.min(7),
+        };
+        frame.render_widget(Clear, popup);
+        let text = match prompt {
+            SourcePrompt::Choice => "Choose audio source:\n1  File (WAV or MP3)\n2  Microphone\n3  System audio (what you hear)\nEsc  Cancel".to_string(),
+            SourcePrompt::FilePath(path) => format!("Enter WAV or MP3 path, then press Enter:\n{}█\nEsc  Cancel", path),
+        };
+        frame.render_widget(
+            Paragraph::new(text).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Audio source "),
+            ),
+            popup,
+        );
+    }
 }
 
 /// Render the document view panel.
@@ -333,7 +365,11 @@ fn render_status_panel(frame: &mut Frame, app: &App, area: Rect) {
     let status_icon = if app.is_processing {
         "⏳"
     } else if app.is_listening {
-        "🎤"
+        if app.audio_source_info == "System audio" {
+            "🔊"
+        } else {
+            "🎤"
+        }
     } else {
         "⏸"
     };
@@ -418,6 +454,13 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
             },
             Style::default().fg(Color::Gray),
         ),
+        Span::styled(
+            "a",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(": Audio source  ", Style::default().fg(Color::Gray)),
         Span::styled(
             "Ctrl+S",
             Style::default()
